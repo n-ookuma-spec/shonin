@@ -116,8 +116,52 @@
       userInfo: { email: '', name: '読み込み中...' },
       selectedMaster: null,
       viewingStaffSchedule: null,
-      staffPicker: { isOpen: false, targetCourse: null, searchQuery: '' }
+      staffPicker: { isOpen: false, targetCourse: null, searchQuery: '' },
+      patientModal: { isOpen: false, formData: { patterns: {} } }
     };
+
+    function openPatientModal(patient) {
+      const defaultPatterns = {};
+      state.daysOfWeek.forEach(d => defaultPatterns[d] = { startTime: '09:00', endTime: '10:00', content: '', enabled: false });
+      state.patientModal = { 
+        isOpen: true, 
+        formData: { 
+          id: patient.id || Date.now(),
+          name: patient.name || '', 
+          room: patient.room || '', 
+          floor: patient.floor || '1',
+          office: patient.office || state.activeOffice,
+          patterns: patient.patterns || defaultPatterns
+        } 
+      };
+      renderApp();
+    }
+    function closePatientModal() { state.patientModal.isOpen = false; renderApp(); }
+    async function savePatientMaster() {
+      const d = state.patientModal.formData;
+      const idx = state.patientMaster.findIndex(p => p.office === d.office && (p.id === d.id || p.room === d.room));
+      if (idx !== -1) state.patientMaster[idx] = { ...d };
+      else state.patientMaster.push({ ...d });
+      
+      closePatientModal();
+      showToast('利用者情報を保存しました');
+      // Firestoreへ保存 (patientsコレクション)
+      if (window.__firebaseSavePatient) window.__firebaseSavePatient(d);
+    }
+
+    function applyPatientPattern(patientName) {
+      const patient = state.patientMaster.find(p => p.name === patientName && p.office === state.activeOffice);
+      if (!patient || !patient.patterns) return;
+      const pattern = patient.patterns[state.activeDay];
+      if (pattern && pattern.enabled) {
+        document.getElementById('modal-startTime').value = pattern.startTime;
+        document.getElementById('modal-endTime').value = pattern.endTime;
+        document.getElementById('modal-content').value = pattern.content;
+        showToast('パターンを適用しました');
+      } else {
+        showToast(state.activeDay + '曜日のパターンは設定されていません');
+      }
+    }
 
     function openStaffPicker(course) {
       state.staffPicker = { isOpen: true, targetCourse: course, searchQuery: '' };
@@ -395,7 +439,7 @@
       if (state.activeMenu === 'visit_schedule') mainContent = renderVisitSchedule();
       else if (state.activeMenu === 'schedule_setting') mainContent = renderCalendar();
       else mainContent = renderMaster();
-      app.innerHTML = `${renderSidebar()}<main class="flex-1 flex flex-col h-screen overflow-hidden bg-white">${renderHeader()}${mainContent}</main>${renderModal()}${renderConfirmModal()}${renderDuplicateModal()}${renderStaffPicker()}`;
+      app.innerHTML = `${renderSidebar()}<main class="flex-1 flex flex-col h-screen overflow-hidden bg-white">${renderHeader()}${mainContent}</main>${renderModal()}${renderConfirmModal()}${renderDuplicateModal()}${renderStaffPicker()}${renderPatientModal()}`;
       lucide.createIcons();
       updateTimeMeter();
     }
@@ -418,7 +462,18 @@
 
     function renderHeader() {
       let title = state.activeMenu === 'visit_schedule' ? '訪問スケジュール' : state.activeMenu === 'schedule_setting' ? 'スケジュール設定' : 'マスタ管理';
-      return `<header class="header-px header-py flex items-center justify-between px-8 py-5 border-b border-uber bg-white shrink-0 text-uber-accent"><h1 class="text-[18px] font-black uppercase italic text-base-adj">${title}</h1><div class="flex items-center gap-4"><div class="relative dropdown ${state.openDropdownId === 'office-selector' ? 'is-open' : ''}"><button onclick="toggleDropdown(event, 'office', 'selector')" class="flex items-center gap-2 px-4 py-2 border border-uber text-[11px] font-black hover:bg-uber-accent hover:text-white transition-all uppercase text-base-adj"><i data-lucide="building-2" class="w-4 h-4"></i>${state.activeOffice}</button><div class="dropdown-content mt-1 border-2 shadow-xl">${state.officeMaster.map(o => `<button onmousedown="changeOffice('${o}')" class="w-full text-left px-4 py-3 text-[11px] font-black border-b border-uber-secondary hover:bg-uber-accent hover:text-white uppercase transition-colors text-base-adj">${o}</button>`).join('')}</div></div></div></header>`;
+      return `<header class="header-px header-py flex items-center justify-between px-8 py-5 border-b border-uber bg-white shrink-0 text-uber-accent">
+        <div class="flex items-center gap-6">
+          <h1 class="text-[18px] font-black uppercase italic text-base-adj">${title}</h1>
+          ${state.activeMenu === 'schedule_setting' ? `<button onclick="openCreateModal(state.activeDay, state.activeCourse, '09:00')" class="flex items-center gap-2 px-6 py-2.5 bg-uber-accent text-white text-[11px] font-black uppercase italic hover:bg-uber-hover transition-all shadow-lg active:scale-95"><i data-lucide="plus" class="w-4 h-4"></i>作成</button>` : ''}
+        </div>
+        <div class="flex items-center gap-4">
+          <div class="relative dropdown ${state.openDropdownId === 'office-selector' ? 'is-open' : ''}">
+            <button onclick="toggleDropdown(event, 'office', 'selector')" class="flex items-center gap-2 px-4 py-2 border border-uber text-[11px] font-black hover:bg-uber-accent hover:text-white transition-all uppercase text-base-adj"><i data-lucide="building-2" class="w-4 h-4"></i>${state.activeOffice}</button>
+            <div class="dropdown-content mt-1 border-2 shadow-xl">${state.officeMaster.map(o => `<button onmousedown="changeOffice('${o}')" class="w-full text-left px-4 py-3 text-[11px] font-black border-b border-uber-secondary hover:bg-uber-accent hover:text-white uppercase transition-colors text-base-adj">${o}</button>`).join('')}</div>
+          </div>
+        </div>
+      </header>`;
     }
 
     function renderVisitSchedule() {
@@ -723,6 +778,19 @@
         }
       }
     }
+
+    // 利用者マスタの保存 (Firestore)
+    async function firebaseSavePatient(patientData) {
+      try {
+        const id = patientData.id || Date.now();
+        await setDoc(doc(db, 'patients', String(id)), patientData);
+        console.log('Patient master saved to Firestore');
+      } catch (e) {
+        console.error('Error saving patient master:', e);
+        window.showToast('マスタ保存に失敗しました');
+      }
+    }
+    window.__firebaseSavePatient = firebaseSavePatient;
 
     // グローバルに差し替え
     window.__firebaseSyncData = firebaseSyncData;
