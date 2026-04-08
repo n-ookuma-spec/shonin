@@ -370,6 +370,10 @@
           <div class="flex items-center gap-1">
             <div class="bg-uber-accent text-white px-3 py-3 font-black text-[12px] italic mr-2 border border-uber">${state.currentMonth}</div>
             ${state.daysOfWeek.map((d,i) => `<button onclick="setActiveDay('${d}')" class="w-12 h-12 border border-uber flex flex-col items-center justify-center font-black transition-all ${state.activeDay===d ? 'bg-uber-accent text-white' : 'hover:bg-uber-secondary'}"><span class="text-[9px]">${d}</span><span class="text-[14px] mono">${state.weekDates[i]}</span></button>`).join('')}
+            <button onclick="goToToday()" class="w-12 h-12 border border-uber flex flex-col items-center justify-center font-black transition-all bg-white text-uber-accent hover:bg-uber-accent hover:text-white ml-1">
+              <span class="text-[9px]">今日</span>
+              <i data-lucide="calendar" class="w-4 h-4 mt-0.5"></i>
+            </button>
           </div>
           <div class="flex items-center gap-4">
             <div class="flex border border-uber rounded-md overflow-hidden bg-uber-secondary p-0.5">
