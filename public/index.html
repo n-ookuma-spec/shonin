@@ -523,10 +523,13 @@
     function triggerAutoSave() {
       if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
       _autoSaveTimer = setTimeout(() => {
-        firebaseSyncData(true); // true はサイレントモード（トーストを控えめにする）
-      }, 2000); // 2秒間操作がなければ保存
+        firebaseSyncData(true); // true はサイレントモード
+      }, 2000);
     }
     window.__triggerAutoSave = triggerAutoSave;
+
+    // 自分の更新操作中かどうかを管理するフラグ
+    var _isInternalSync = false;
 
     // -------------------------------------------------------
     // syncData の Firebase 実装
@@ -534,6 +537,7 @@
     async function firebaseSyncData(silent = false) {
       if (!state.isLoaded) return;
       if (!silent) window.showToast('同期中...');
+      _isInternalSync = true;
 
       try {
         const settingsRef = doc(db, 'settings', 'config');
@@ -555,6 +559,10 @@
           });
           return ts;
         });
+
+        // 重要: トランザクション成功後、即座にローカルの lastUpdate を更新
+        // これにより onSnapshot 側での「他者による更新」判定を回避する
+        state.lastUpdate = newTs;
 
         // Step 2: バッチ書き込み — 差分のみ
         const batch = writeBatch(db);
