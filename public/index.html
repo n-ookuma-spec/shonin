@@ -448,12 +448,12 @@
               <i data-lucide="calendar" class="w-4 h-4 mt-0.5"></i>
             </button>
           </div>
-          <div class="flex items-center gap-6">
+          <div class="flex items-center gap-4 lg:gap-6 flex-wrap">
             <!-- 勤務帯切り替え (タブ) -->
-            <div class="flex bg-uber-secondary p-1 border border-uber rounded-lg">
+            <div class="flex bg-uber-secondary p-1 border border-uber rounded-lg shrink-0">
               ${state.tabConfigs.map(t => `
                 <button onclick="setActiveTab('${t.id}')" 
-                  class="px-4 md:px-6 py-2 text-[10px] font-black uppercase tracking-widest transition-all rounded-md flex items-center gap-2
+                  class="px-4 lg:px-6 py-2 text-[10px] font-black uppercase tracking-widest transition-all rounded-md flex items-center gap-2
                   ${state.activeTab===t.id ? 'bg-uber-accent text-white shadow-lg' : 'text-uber-accent/40 hover:text-uber-accent hover:bg-white'}">
                   <i data-lucide="${t.id==='night'?'moon':'sun'}" class="w-3.5 h-3.5"></i>
                   ${t.label}
@@ -461,29 +461,29 @@
               `).join('')}
             </div>
 
-            <div class="w-px h-8 bg-uber opacity-10"></div>
+            <div class="hidden lg:block w-px h-8 bg-uber opacity-10"></div>
 
             <!-- コース一覧と管理 -->
-            <div class="flex items-center gap-2">
-              <div class="course-chip-max-w flex items-center gap-1.5 overflow-x-auto max-w-[400px] no-scrollbar py-1">
+            <div class="flex items-center gap-2 flex-1 min-w-[300px]">
+              <div class="course-chip-max-w flex items-center gap-1.5 overflow-x-auto max-w-[300px] lg:max-w-[450px] no-scrollbar py-1">
                 ${courses.map(c => `
                   <button onclick="setActiveCourse('${c}')" 
-                    class="px-4 md:px-5 py-2 text-[10px] font-black uppercase italic border-2 transition-all rounded-full whitespace-nowrap
+                    class="px-4 lg:px-5 py-2 text-[10px] font-black uppercase italic border-2 transition-all rounded-full whitespace-nowrap
                     ${state.activeCourse===c ? 'bg-uber-accent text-white border-uber-accent shadow-md scale-105' : 'bg-white text-uber-accent border-uber-border hover:border-uber-accent'}">
                     ${c}
                   </button>
                 `).join('')}
                 <button onclick="addNewCourse()" 
-                  class="w-8 h-8 flex items-center justify-center rounded-full border-2 border-dashed border-uber-accent/20 text-uber-accent/40 hover:border-uber-accent hover:text-uber-accent transition-all"
+                  class="w-8 h-8 flex items-center justify-center rounded-full border-2 border-dashed border-uber-accent/20 text-uber-accent/40 hover:border-uber-accent hover:text-uber-accent transition-all shrink-0"
                   title="コース追加">
                   <i data-lucide="plus" class="w-4 h-4"></i>
                 </button>
               </div>
 
               <!-- 選択中コースの編集/削除ツール -->
-              <div class="flex items-center gap-1 ml-2 bg-uber-secondary p-1 border border-uber rounded-lg">
+              <div class="flex items-center gap-1 ml-auto lg:ml-2 bg-uber-secondary p-1 border border-uber rounded-lg shrink-0">
                 <input type="text" value="${state.activeCourse}" onchange="updateCourseName(this.value)" 
-                  class="bg-white border border-uber-border px-3 py-1.5 text-[10px] font-black text-uber-accent outline-none focus:border-uber-accent transition-all rounded w-24 md:w-28 italic" 
+                  class="bg-white border border-uber-border px-2 lg:px-3 py-1.5 text-[10px] font-black text-uber-accent outline-none focus:border-uber-accent transition-all rounded w-20 lg:w-28 italic" 
                   placeholder="コース名..." />
                 ${courses.length > 1 ? `
                   <button onclick="deleteCourse()" 
