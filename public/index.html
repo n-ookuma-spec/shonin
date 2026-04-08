@@ -606,7 +606,49 @@
     }
     function renderPatientMaster() {
       const floors = [1, 2, 3, 4]; const currentPatients = state.patientMaster.filter(p => p.office === state.activeOffice);
-      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><h3 class="text-4xl mb-16 tracking-tighter uppercase italic font-black">利用者マスタ <span class="text-sm opacity-20 ml-4">${state.activeOffice}</span></h3><div class="grid grid-cols-1 md:grid-cols-4 gap-0 border-t border-l border-uber">${floors.map(f => `<div class="flex flex-col border-r border-uber"><div class="bg-uber-accent text-white p-4 font-black italic uppercase"><div class="text-[11px] tracking-[0.3em] font-black italic">${f}階</div></div><div class="flex flex-col">${currentPatients.filter(p => parseInt(p.floor) === f).map(p => `<div class="p-5 border-b border-uber flex justify-between items-center hover:bg-uber-secondary transition-all text-uber-accent w-full text-left"><span class="text-[11px] mono opacity-60 font-black">${p.room}</span><span class="text-[13px] italic uppercase font-black">${p.name || '<span class="opacity-60 not-italic">空室</span>'}</span></div>`).join('')}</div></div>`).join('')}</div></div>`;
+      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><h3 class="text-4xl mb-16 tracking-tighter uppercase italic font-black">利用者マスタ <span class="text-sm opacity-20 ml-4">${state.activeOffice}</span></h3><div class="grid grid-cols-1 md:grid-cols-4 gap-0 border-t border-l border-uber">${floors.map(f => `<div class="flex flex-col border-r border-uber"><div class="bg-uber-accent text-white p-4 font-black italic uppercase"><div class="text-[11px] tracking-[0.3em] font-black italic">${f}階</div></div><div class="flex flex-col">${currentPatients.filter(p => parseInt(p.floor) === f).map(p => `<button onclick="openPatientModal(${JSON.stringify(p).replace(/"/g, '&quot;')})" class="p-5 border-b border-uber flex justify-between items-center hover:bg-uber-secondary transition-all text-uber-accent w-full text-left"><span class="text-[11px] mono opacity-60 font-black">${p.room}</span><span class="text-[13px] italic uppercase font-black">${p.name || '<span class="opacity-60 not-italic">空室</span>'}</span></button>`).join('')}</div></div>`).join('')}</div></div>`;
+    }
+
+    function renderPatientModal() {
+      if (!state.patientModal.isOpen) return '';
+      const d = state.patientModal.formData;
+      return `<div class="fixed inset-0 bg-black/60 z-[3000] flex items-center justify-center p-6 text-uber-accent font-black uppercase italic" onclick="closePatientModal()">
+        <div class="bg-white border-[3px] border-uber w-full max-w-[900px] shadow-2xl overflow-hidden" onclick="event.stopPropagation()">
+          <div class="bg-uber-accent p-6 text-white flex justify-between items-center">
+            <span class="text-[12px] tracking-widest uppercase italic font-black">利用者編集: ${d.name || '新規'}</span>
+            <button onclick="closePatientModal()"><i data-lucide="x" class="w-6 h-6"></i></button>
+          </div>
+          <div class="p-10 flex flex-col gap-10">
+            <div class="grid grid-cols-3 gap-8">
+              <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">氏名</label><input type="text" value="${d.name}" oninput="state.patientModal.formData.name=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none focus:bg-uber-secondary italic text-uber-accent"></div>
+              <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">居室</label><input type="text" value="${d.room}" oninput="state.patientModal.formData.room=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none focus:bg-uber-secondary italic text-uber-accent"></div>
+              <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">階数</label><select onchange="state.patientModal.formData.floor=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none appearance-none bg-white italic text-uber-accent">${[1,2,3,4].map(f => `<option value="${f}" ${d.floor==f?'selected':''}>${f}階</option>`).join('')}</select></div>
+            </div>
+            
+            <div class="flex flex-col gap-4">
+              <div class="text-[11px] font-black tracking-widest border-l-4 border-uber-accent pl-4 mb-2 uppercase italic">週間パターン設定 (デフォルト)</div>
+              <div class="grid grid-cols-7 gap-2">
+                ${state.daysOfWeek.map(day => {
+                  const p = d.patterns[day] || { startTime: '09:00', endTime: '10:00', content: '', enabled: false };
+                  return `<div class="border border-uber p-4 flex flex-col gap-3 ${p.enabled ? 'bg-uber-secondary' : 'opacity-40'}">
+                    <div class="flex items-center justify-between">
+                      <span class="text-[11px] font-black">${day}</span>
+                      <input type="checkbox" ${p.enabled?'checked':''} onchange="state.patientModal.formData.patterns['${day}'].enabled=this.checked; renderApp();" class="accent-uber-accent">
+                    </div>
+                    <input type="time" value="${p.startTime}" onchange="state.patientModal.formData.patterns['${day}'].startTime=this.value" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
+                    <input type="time" value="${p.endTime}" onchange="state.patientModal.formData.patterns['${day}'].endTime=this.value" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
+                    <input type="text" placeholder="内容" value="${p.content}" oninput="state.patientModal.formData.patterns['${day}'].content=this.value" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none italic text-uber-accent">
+                  </div>`;
+                }).join('')}
+              </div>
+            </div>
+          </div>
+          <div class="p-8 bg-uber-secondary border-t border-uber flex justify-end gap-0">
+            <button onclick="closePatientModal()" class="px-10 py-5 bg-white border-r border-uber text-[11px] font-black uppercase hover:bg-uber-accent hover:text-white transition-all text-uber-accent">キャンセル</button>
+            <button onclick="savePatientMaster()" class="px-12 py-5 bg-uber-accent text-white text-[11px] font-black uppercase hover:bg-uber-hover transition-all">マスタ保存</button>
+          </div>
+        </div>
+      </div>`;
     }
 
     function renderModal() {
