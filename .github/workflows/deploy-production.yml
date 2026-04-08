@@ -1,0 +1,15 @@
+name: Deploy to Production
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Firebase CLI
+        run: npm install -g firebase-tools
+      - name: Deploy to Firebase Production
+        run: firebase deploy --only hosting,firestore --project production --token "${{ secrets.FIREBASE_TOKEN }}"
