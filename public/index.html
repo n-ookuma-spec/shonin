@@ -187,25 +187,25 @@
     function selectPatient(id, name, room) {
       const sch = state.scheduleRows.find(r => r.id === id);
       if(sch) { sch.patient = name; sch.room = room; }
-      state.openDropdownId = null; renderApp();
+      state.openDropdownId = null; renderApp(); window.__triggerAutoSave && window.__triggerAutoSave();
     }
     function selectSecondaryStaff(id, name) {
       const sch = state.scheduleRows.find(r => r.id === id);
       if(sch) { sch.secondaryStaff = name; }
-      state.openDropdownId = null; renderApp();
+      state.openDropdownId = null; renderApp(); window.__triggerAutoSave && window.__triggerAutoSave();
     }
     function selectTime(id, field, time, e) {
       if(e) e.stopPropagation();
       const sch = state.scheduleRows.find(r => r.id === id);
       if(sch) { sch[field] = time; }
-      state.openDropdownId = null; renderApp();
+      state.openDropdownId = null; renderApp(); window.__triggerAutoSave && window.__triggerAutoSave();
     }
 
     function syncWithPrevious(id, e) {
       e.preventDefault(); e.stopPropagation();
       const currentRows = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === state.activeDay && r.course === state.activeCourse).sort((a,b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
       const idx = currentRows.findIndex(r => r.id === id);
-      if (idx > 0) { const sch = state.scheduleRows.find(r => r.id === id); sch.startTime = currentRows[idx - 1].endTime; renderApp(); }
+      if (idx > 0) { const sch = state.scheduleRows.find(r => r.id === id); sch.startTime = currentRows[idx - 1].endTime; renderApp(); window.__triggerAutoSave && window.__triggerAutoSave(); }
     }
 
     function addRow() {
@@ -216,21 +216,21 @@
       const startMin = timeToMinutes(nextStart);
       const nextEnd = formatTime(Math.floor((startMin + 60)/60), (startMin + 60)%60);
       state.scheduleRows.push({ id: Date.now(), office: state.activeOffice, day: state.activeDay, course: state.activeCourse, startTime: nextStart, endTime: nextEnd, room: '', patient: '', content: '', isMultiple: false, secondaryStaff: '' });
-      renderApp();
+      renderApp(); window.__triggerAutoSave && window.__triggerAutoSave();
     }
 
     function updateCourseAssignee(course, staffName) {
       const key = `${state.activeOffice}|${state.activeDay}|${state.activeTab}|${course}`;
       if (staffName) state.courseAssignees[key] = staffName;
       else delete state.courseAssignees[key];
-      renderApp();
+      renderApp(); window.__triggerAutoSave && window.__triggerAutoSave();
     }
     function updateCourseName(newName) {
       const oldName = state.activeCourse; const courses = state.courseNames[state.activeTab]; const index = courses.indexOf(oldName);
       if (index !== -1 && newName.trim() !== "") {
         courses[index] = newName; state.activeCourse = newName;
         state.scheduleRows.forEach(r => { if (r.office === state.activeOffice && r.course === oldName) r.course = newName; });
-        saveUIState(); renderApp();
+        saveUIState(); renderApp(); window.__triggerAutoSave && window.__triggerAutoSave();
       }
     }
     function addNewCourse() {
@@ -239,7 +239,7 @@
       let newName = "新コース";
       if (lastCourse) { const match = lastCourse.match(/^([^\d]+)(\d+)$/); if (match) newName = match[1] + (parseInt(match[2], 10) + 1); else newName = lastCourse + "2"; }
       courses.push(newName); state.activeCourse = newName;
-      saveUIState(); renderApp(); showToast(newName + 'を追加しました');
+      saveUIState(); renderApp(); showToast(newName + 'を追加しました'); window.__triggerAutoSave && window.__triggerAutoSave();
     }
     function deleteCourse() {
       const courses = state.courseNames[state.activeTab];
@@ -251,7 +251,7 @@
           courses.splice(index, 1);
           state.scheduleRows = state.scheduleRows.filter(r => !(r.office === state.activeOffice && r.course === oldName));
           state.activeCourse = courses[0];
-          saveUIState(); renderApp(); showToast(oldName + 'を削除しました');
+          saveUIState(); renderApp(); showToast(oldName + 'を削除しました'); window.__triggerAutoSave && window.__triggerAutoSave();
         }
       });
     }
@@ -277,7 +277,7 @@
       state.duplicateModal.selectedDays.forEach(day => {
         if (day !== state.activeDay) { state.scheduleRows.push({ ...sch, id: Date.now() + Math.random(), day: day }); }
       });
-      state.duplicateModal.isOpen = false; showToast('複製しました'); renderApp();
+      state.duplicateModal.isOpen = false; showToast('複製しました'); renderApp(); window.__triggerAutoSave && window.__triggerAutoSave();
     }
     function renderDuplicateModal() {
       if (!state.duplicateModal.isOpen) return '';
@@ -292,13 +292,13 @@
     function saveModalEvent() {
       const d = state.modalState.formData; d.office = state.activeOffice; d.day = document.getElementById('modal-day').value; d.startTime = document.getElementById('modal-startTime').value; d.endTime = document.getElementById('modal-endTime').value; d.room = document.getElementById('modal-room').value; d.patient = document.getElementById('modal-patient').value; d.secondaryStaff = document.getElementById('modal-staff').value; d.content = document.getElementById('modal-content').value; d.isMultiple = !!d.secondaryStaff;
       if (state.modalState.mode === 'create') { d.id = Date.now(); state.scheduleRows.push({ ...d }); } else { const idx = state.scheduleRows.findIndex(r => r.id === d.id); if(idx !== -1) state.scheduleRows[idx] = { ...d }; }
-      closeModal(); showToast('保存しました（未同期）');
+      closeModal(); showToast('保存しました'); window.__triggerAutoSave && window.__triggerAutoSave();
     }
 
     function showContextMenu(id, e) { e.preventDefault(); e.stopPropagation(); state.contextMenuTargetId = id; const menu = document.getElementById('context-menu'); menu.style.display = 'block'; menu.style.left = e.clientX + 'px'; menu.style.top = e.clientY + 'px'; }
     function handleContextMenuAction(action) {
       const id = state.contextMenuTargetId; if (!id) return;
-      if (action === 'delete') { showConfirm('この予定を削除しますか？', () => { state.scheduleRows = state.scheduleRows.filter(r => r.id !== id); renderApp(); }); }
+      if (action === 'delete') { showConfirm('この予定を削除しますか？', () => { state.scheduleRows = state.scheduleRows.filter(r => r.id !== id); renderApp(); window.__triggerAutoSave && window.__triggerAutoSave(); }); }
       else if (action === 'duplicate') { openDuplicateModal(id); }
       else if (action === 'edit') openEditModal(id);
       document.getElementById('context-menu').style.display = 'none';
@@ -307,7 +307,7 @@
     var draggedId = null;
     function handleDragStart(id, e) { draggedId = id; e.target.classList.add('dragging'); e.dataTransfer.setData('text/plain', id); }
     function handleDragEnd(e) { e.target.classList.remove('dragging'); draggedId = null; }
-    function handleDrop(e, course) { e.preventDefault(); const id = parseInt(e.dataTransfer.getData('text/plain'), 10); const sch = state.scheduleRows.find(r => r.id === id); if (!sch) return; const rect = e.currentTarget.getBoundingClientRect(); const startMin = 7 * 60 + (Math.floor((e.clientY - rect.top) / 15) * 15); const dur = timeToMinutes(sch.endTime) - timeToMinutes(sch.startTime); sch.course = course; sch.startTime = formatTime(Math.floor(startMin/60), startMin%60); sch.endTime = formatTime(Math.floor((startMin+dur)/60), (startMin+dur)%60); renderApp(); showToast('移動しました'); }
+    function handleDrop(e, course) { e.preventDefault(); const id = parseInt(e.dataTransfer.getData('text/plain'), 10); const sch = state.scheduleRows.find(r => r.id === id); if (!sch) return; const rect = e.currentTarget.getBoundingClientRect(); const startMin = 7 * 60 + (Math.floor((e.clientY - rect.top) / 15) * 15); const dur = timeToMinutes(sch.endTime) - timeToMinutes(sch.startTime); sch.course = course; sch.startTime = formatTime(Math.floor(startMin/60), startMin%60); sch.endTime = formatTime(Math.floor((startMin+dur)/60), (startMin+dur)%60); renderApp(); showToast('移動しました'); window.__triggerAutoSave && window.__triggerAutoSave(); }
 
     function renderLoginScreen() {
       return `<div class="fixed inset-0 bg-white flex flex-col items-center justify-center text-uber-accent"><div class="border-[3px] border-uber-accent w-full max-w-[420px] shadow-2xl"><div class="bg-uber-accent p-8 text-white flex items-center gap-4"><i data-lucide="zap" class="w-8 h-8"></i><div><div class="text-2xl font-black uppercase italic tracking-tighter">承認表システム</div><div class="text-[11px] font-bold opacity-60 uppercase tracking-[0.3em] mt-1">Firebase Edition</div></div></div><div class="p-10 flex flex-col items-center gap-8 bg-white"><p class="text-[13px] font-black uppercase italic opacity-50 tracking-widest text-center">Google アカウントでログイン</p><button onclick="window.__firebaseGoogleSignIn && window.__firebaseGoogleSignIn()" class="w-full flex items-center justify-center gap-3 border-[3px] border-uber-accent px-8 py-5 bg-white hover:bg-uber-accent hover:text-white transition-all group text-uber-accent font-black uppercase italic text-[13px] tracking-widest"><svg class="w-5 h-5 shrink-0" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>Google でログイン</button></div></div></div>`;
@@ -518,12 +518,22 @@
       };
     }
 
+    // --- デバウンス処理 (自動保存用) ---
+    let _autoSaveTimer = null;
+    function triggerAutoSave() {
+      if (_autoSaveTimer) clearTimeout(_autoSaveTimer);
+      _autoSaveTimer = setTimeout(() => {
+        firebaseSyncData(true); // true はサイレントモード（トーストを控えめにする）
+      }, 2000); // 2秒間操作がなければ保存
+    }
+    window.__triggerAutoSave = triggerAutoSave;
+
     // -------------------------------------------------------
     // syncData の Firebase 実装
     // -------------------------------------------------------
-    async function firebaseSyncData() {
+    async function firebaseSyncData(silent = false) {
       if (!state.isLoaded) return;
-      window.showToast('同期中...');
+      if (!silent) window.showToast('同期中...');
 
       try {
         const settingsRef = doc(db, 'settings', 'config');
@@ -583,7 +593,8 @@
 
         state.lastUpdate = newTs;
         window.renderApp();
-        window.showToast('保存完了');
+        if (!silent) window.showToast('保存完了');
+        else console.log('Auto-save completed');
 
       } catch (e) {
         if (e.message === 'CONFLICT') {
@@ -592,10 +603,14 @@
             () => location.reload()
           );
         } else {
-          window.showConfirm(
-            '保存エラー: ' + e.message + '\n再試行しますか？',
-            () => firebaseSyncData()
-          );
+          if (!silent) {
+            window.showConfirm(
+              '保存エラー: ' + e.message + '\n再試行しますか？',
+              () => firebaseSyncData()
+            );
+          } else {
+            console.error('Auto-save error:', e);
+          }
         }
       }
     }
