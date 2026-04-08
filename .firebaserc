@@ -1,0 +1,6 @@
+{
+  "projects": {
+    "staging": "shonin-staging-89db3",
+    "production": "shonin-prod"
+  }
+}

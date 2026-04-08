@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>承認表 - Firebase Edition</title>
+  <!-- 環境設定: staging/production Firebase Config を自動切替 -->
+  <script src="envConfig.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            uber: { base: '#FFFFFF', accent: '#2C2C2C', secondary: '#F8F8F8', border: '#E8E8E8', hover: '#4A4A4A' }
+          }
+        }
+      }
+    }
+  </script>
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;500;700;900&family=DM+Mono:wght@400;500&display=swap');
+    body { font-family: 'Noto Sans JP', sans-serif; background-color: #FFFFFF; color: #2C2C2C; -webkit-font-smoothing: antialiased; }
+    .mono { font-family: 'DM Mono', monospace; }
+    .border-uber { border-color: #2C2C2C; }
+    ::-webkit-scrollbar { width: 4px; height: 4px; }
+    ::-webkit-scrollbar-thumb { background: #2C2C2C; }
+
+    .dropdown-content { display: none; position: absolute; z-index: 1000; background-color: white; min-width: 240px; box-shadow: 0 8px 24px rgba(0,0,0,0.1); border: 1px solid #2C2C2C; right: 0; max-height: 300px; overflow-y: auto; }
+    .dropdown.is-open .dropdown-content { display: block; }
+
+    .time-picker-popup { display: none; position: absolute; top: 100%; left: 0; z-index: 1500; background-color: white; border: 1px solid #2C2C2C; box-shadow: 0 4px 12px rgba(0,0,0,0.1); width: 110px; max-height: 200px; overflow-y: auto; }
+    .time-picker-popup.is-open { display: block; }
+
+    .bg-grid { background-image: linear-gradient(#E8E8E8 1px, transparent 1px); background-size: 100% 60px; }
+    .cal-event { cursor: pointer; user-select: none; transition: all 0.1s ease; border: 1px solid #2C2C2C; }
+    .cal-event.dragging { opacity: 0.4; }
+
+    #context-menu { display: none; position: fixed; z-index: 5000; background: white; border: 2px solid #2C2C2C; padding: 4px; min-width: 180px; box-shadow: 10px 10px 0px rgba(0,0,0,0.05); }
+    .sidebar-active-indicator { position: absolute; left: 0; width: 4px; height: 100%; background-color: #2C2C2C; }
+
+    #now-line-calendar { position: absolute; left: 0; right: 0; height: 2px; background-color: #ef4444; z-index: 40; pointer-events: none; }
+    #now-line-calendar::before { content: ""; position: absolute; left: -6px; top: -5px; width: 12px; height: 12px; background-color: #ef4444; border-radius: 50%; }
+
+    /* 環境バッジ */
+    #env-badge { position: fixed; bottom: 8px; right: 8px; z-index: 9998; font-size: 9px; font-weight: 900; padding: 2px 8px; pointer-events: none; }
+    #env-badge.staging { background: #f59e0b; color: #000; }
+    #env-badge.production { display: none; }
+
+    @media print {
+      aside, header, .no-print, #toast, #context-menu, .modal-backdrop, #env-badge { display: none !important; }
+      body, main, #app, .flex-1 { height: auto !important; overflow: visible !important; display: block !important; }
+      table { border-collapse: collapse !important; width: 100% !important; }
+      th, td { border: 1px solid #2C2C2C !important; }
+    }
+  </style>
+</head>
+<body class="overflow-hidden" onclick="hideAllFloatingUI(event)" oncontextmenu="return false;">
+  <div id="app" class="flex h-screen transition-opacity duration-300"></div>
+
+  <div id="context-menu" class="no-print">
+    <button onclick="handleContextMenuAction('duplicate')" class="w-full text-left px-3 py-2 hover:bg-uber-accent hover:text-white flex items-center gap-2 text-sm font-bold transition-colors text-uber-accent">
+      <i data-lucide="copy" class="w-4 h-4"></i>複製（他曜日へ）
+    </button>
+    <button onclick="handleContextMenuAction('edit')" class="w-full text-left px-3 py-2 hover:bg-uber-accent hover:text-white flex items-center gap-2 text-sm font-bold transition-colors text-uber-accent">
+      <i data-lucide="edit-3" class="w-4 h-4"></i>編集
+    </button>
+    <div class="h-[2px] bg-uber-accent my-1 opacity-20"></div>
+    <button onclick="handleContextMenuAction('delete')" class="w-full text-left px-3 py-2 hover:bg-red-600 hover:text-white flex items-center gap-2 text-sm font-bold transition-colors text-red-600">
+      <i data-lucide="trash-2" class="w-4 h-4"></i>削除
+    </button>
+  </div>
+
+  <div id="env-badge"></div>
+
+  <!-- ===== UI ロジック (非モジュール) ===== -->
+  <script>
+    // var を使って window.state としてモジュールスクリプトから参照可能にする
+    var state = {
+      activeMenu: 'visit_schedule',
+      scheduleViewMode: 'calendar',
+      activeTab: 'day_ns',
+      activeDay: '',
+      activeCourse: '看1',
+      activeOffice: 'NH南千住',
+      openDropdownId: null,
+      contextMenuTargetId: null,
+      authChecked: false,
+      isAuthenticated: false,
+      isLoaded: false,
+      lastUpdate: null,
+      modalState: { isOpen: false, mode: 'create', formData: {} },
+      duplicateModal: { isOpen: false, targetId: null, selectedDays: [] },
+      confirmModal: { isOpen: false, message: '', onConfirm: null },
+      officeMaster: [], staffMaster: [], patientMaster: [], courseAssignees: {},
+      courseNames: { 'day_ns': ['看1'], 'day_cw': ['介1'], 'night': ['夜看1'] },
+      tabConfigs: [{ id: 'day_ns', label: '日勤（看）' }, { id: 'day_cw', label: '日勤（介）' }, { id: 'night', label: '夜勤' }],
+      scheduleRows: [],
+      daysOfWeek: ['月', '火', '水', '木', '金', '土', '日'],
+      weekDates: [],
+      currentMonth: '',
+      userInfo: { email: '', name: '読み込み中...' },
+      selectedMaster: null,
+      viewingStaffSchedule: null
+    };
+
+    function openStaffSchedule(staffName) {
+      if (state.viewingStaffSchedule === staffName) { state.viewingStaffSchedule = null; }
+      else { state.viewingStaffSchedule = staffName; }
+      renderApp();
+    }
+    function closeStaffSchedule() { state.viewingStaffSchedule = null; renderApp(); }
+
+    function initDates() {
+      const now = new Date();
+      const dayIdx = now.getDay();
+      const monday = new Date(now);
+      monday.setDate(now.getDate() - (dayIdx === 0 ? 6 : dayIdx - 1));
+      state.weekDates = Array.from({length: 7}, (_, i) => {
+        const d = new Date(monday); d.setDate(monday.getDate() + i); return d.getDate();
+      });
+      state.currentMonth = (now.getMonth() + 1) + '月';
+      state.activeDay = state.daysOfWeek[(now.getDay() + 6) % 7];
+    }
+    initDates();
+
+    function saveUIState() {
+      localStorage.setItem('uber_app_ui_state_v11', JSON.stringify({ office: state.activeOffice, tab: state.activeTab, day: state.activeDay, course: state.activeCourse, menu: state.activeMenu, view: state.scheduleViewMode }));
+    }
+    function restoreUIState() {
+      const saved = localStorage.getItem('uber_app_ui_state_v11');
+      if (saved) { try { Object.assign(state, JSON.parse(saved)); } catch(e) {} }
+    }
+
+    const formatTime = (h, m) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+    const quickTimes = [];
+    for (let h = 6; h <= 22; h++) { for (let m = 0; m < 60; m += 15) { quickTimes.push(formatTime(h, m)); } }
+
+    function showToast(message) {
+      const toast = document.getElementById('toast') || createToastElement();
+      toast.querySelector('span').textContent = message;
+      toast.classList.replace('opacity-0', 'opacity-100');
+      setTimeout(() => toast.classList.replace('opacity-100', 'opacity-0'), 2500);
+    }
+    function createToastElement() {
+      const div = document.createElement('div'); div.id = 'toast';
+      div.className = 'fixed bottom-8 left-1/2 -translate-x-1/2 z-[9999] bg-uber-accent text-white px-8 py-4 shadow-2xl opacity-0 transition-all duration-200 pointer-events-none flex items-center gap-3 border border-white/10';
+      div.innerHTML = '<i data-lucide="info" class="w-4 h-4"></i><span class="text-sm font-black tracking-widest uppercase"></span>';
+      document.body.appendChild(div); lucide.createIcons({root: div}); return div;
+    }
+
+    function timeToMinutes(t) { if(!t) return 0; const [h,m] = t.split(':').map(Number); return h * 60 + m; }
+    function timeToPx(t) { return Math.max(0, timeToMinutes(t) - (7 * 60)); }
+    function getTimeCategory(timeStr) {
+      const h = parseInt(timeStr?.split(':')[0] || '0', 10);
+      if (h < 8) return '早朝'; if (h >= 18) return '夜間'; return '日中';
+    }
+
+    function updateTimeMeter() {
+      const now = new Date(); const currentDayName = state.daysOfWeek[(now.getDay() + 6) % 7]; const h = now.getHours(); const m = now.getMinutes();
+      const line = document.getElementById('now-line-calendar');
+      if (line && state.activeDay === currentDayName && h >= 7 && h < 22) { line.classList.remove('hidden'); line.style.top = timeToPx(formatTime(h, m)) + 'px'; }
+      else if (line) { line.classList.add('hidden'); }
+    }
+
+    function hideAllFloatingUI(e) {
+      document.getElementById('context-menu').style.display = 'none';
+      if (state.openDropdownId) { state.openDropdownId = null; renderApp(); }
+    }
+    function toggleDropdown(e, id, type) {
+      e.stopPropagation();
+      const target = `${id}-${type}`;
+      state.openDropdownId = (state.openDropdownId === target) ? null : target;
+      renderApp();
+    }
+
+    function changeOffice(office) { state.activeOffice = office; state.openDropdownId = null; saveUIState(); renderApp(); }
+    function setActiveMenu(m) { state.activeMenu = m; state.selectedMaster = null; saveUIState(); renderApp(); }
+    function setScheduleViewMode(m) { state.scheduleViewMode = m; saveUIState(); renderApp(); }
+    function setActiveTab(t) { state.activeTab = t; state.activeCourse = (state.courseNames[t] && state.courseNames[t][0]) || '看1'; saveUIState(); renderApp(); }
+    function setActiveDay(d) { state.activeDay = d; saveUIState(); renderApp(); }
+    function setActiveCourse(c) { state.activeCourse = c; renderApp(); }
+    function openMasterDetail(m) { state.selectedMaster = m; renderApp(); }
+    function goToToday() { initDates(); saveUIState(); renderApp(); }
+
+    function selectPatient(id, name, room) {
+      const sch = state.scheduleRows.find(r => r.id === id);
+      if(sch) { sch.patient = name; sch.room = room; }
+      state.openDropdownId = null; renderApp();
+    }
+    function selectSecondaryStaff(id, name) {
+      const sch = state.scheduleRows.find(r => r.id === id);
+      if(sch) { sch.secondaryStaff = name; }
+      state.openDropdownId = null; renderApp();
+    }
+    function selectTime(id, field, time, e) {
+      if(e) e.stopPropagation();
+      const sch = state.scheduleRows.find(r => r.id === id);
+      if(sch) { sch[field] = time; }
+      state.openDropdownId = null; renderApp();
+    }
+
+    function syncWithPrevious(id, e) {
+      e.preventDefault(); e.stopPropagation();
+      const currentRows = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === state.activeDay && r.course === state.activeCourse).sort((a,b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+      const idx = currentRows.findIndex(r => r.id === id);
+      if (idx > 0) { const sch = state.scheduleRows.find(r => r.id === id); sch.startTime = currentRows[idx - 1].endTime; renderApp(); }
+    }
+
+    function addRow() {
+      const currentRows = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === state.activeDay && r.course === state.activeCourse);
+      const sorted = [...currentRows].sort((a,b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+      const lastRow = sorted[sorted.length - 1];
+      const nextStart = lastRow ? lastRow.endTime : '09:00';
+      const startMin = timeToMinutes(nextStart);
+      const nextEnd = formatTime(Math.floor((startMin + 60)/60), (startMin + 60)%60);
+      state.scheduleRows.push({ id: Date.now(), office: state.activeOffice, day: state.activeDay, course: state.activeCourse, startTime: nextStart, endTime: nextEnd, room: '', patient: '', content: '', isMultiple: false, secondaryStaff: '' });
+      renderApp();
+    }
+
+    function updateCourseAssignee(course, staffName) {
+      const key = `${state.activeOffice}|${state.activeDay}|${state.activeTab}|${course}`;
+      if (staffName) state.courseAssignees[key] = staffName;
+      else delete state.courseAssignees[key];
+      renderApp();
+    }
+    function updateCourseName(newName) {
+      const oldName = state.activeCourse; const courses = state.courseNames[state.activeTab]; const index = courses.indexOf(oldName);
+      if (index !== -1 && newName.trim() !== "") {
+        courses[index] = newName; state.activeCourse = newName;
+        state.scheduleRows.forEach(r => { if (r.office === state.activeOffice && r.course === oldName) r.course = newName; });
+        saveUIState(); renderApp();
+      }
+    }
+    function addNewCourse() {
+      const courses = state.courseNames[state.activeTab];
+      const lastCourse = courses[courses.length - 1];
+      let newName = "新コース";
+      if (lastCourse) { const match = lastCourse.match(/^([^\d]+)(\d+)$/); if (match) newName = match[1] + (parseInt(match[2], 10) + 1); else newName = lastCourse + "2"; }
+      courses.push(newName); state.activeCourse = newName;
+      saveUIState(); renderApp(); showToast(newName + 'を追加しました');
+    }
+    function deleteCourse() {
+      const courses = state.courseNames[state.activeTab];
+      if (courses.length <= 1) { showToast('最後のコースは削除できません'); return; }
+      showConfirm(state.activeCourse + 'を削除しますか？\n紐付く全予定も削除されます。', () => {
+        const oldName = state.activeCourse;
+        const index = courses.indexOf(oldName);
+        if (index !== -1) {
+          courses.splice(index, 1);
+          state.scheduleRows = state.scheduleRows.filter(r => !(r.office === state.activeOffice && r.course === oldName));
+          state.activeCourse = courses[0];
+          saveUIState(); renderApp(); showToast(oldName + 'を削除しました');
+        }
+      });
+    }
+
+    // syncData: Firebase モジュール初期化後に window.__firebaseSyncData が差し替えられる
+    function syncData() {
+      if (!state.isLoaded) return;
+      if (window.__firebaseSyncData) { window.__firebaseSyncData(); }
+      else { showToast('Firebase 初期化中...'); }
+    }
+
+    function showConfirm(message, onConfirm) { state.confirmModal = { isOpen: true, message, onConfirm }; renderApp(); }
+    function closeConfirm() { state.confirmModal.isOpen = false; renderApp(); }
+    function renderConfirmModal() {
+      if (!state.confirmModal.isOpen) return '';
+      return `<div class="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-6" onclick="closeConfirm()"><div class="bg-white border-[3px] border-uber w-full max-w-[400px] shadow-2xl" onclick="event.stopPropagation()"><div class="bg-uber-accent p-4 text-white text-[10px] font-black uppercase italic flex items-center gap-3"><i data-lucide="alert-triangle" class="w-4 h-4"></i>確認</div><div class="p-8"><p class="text-[14px] font-black text-uber-accent uppercase italic mb-8 whitespace-pre-line">${state.confirmModal.message}</p><div class="flex gap-0 border-t border-uber -mx-8 -mb-8 mt-8"><button onclick="closeConfirm()" class="flex-1 px-6 py-5 bg-white text-[11px] font-black text-uber-accent border-r border-uber hover:bg-uber-secondary">キャンセル</button><button onclick="state.confirmModal.onConfirm(); closeConfirm();" class="flex-1 px-6 py-5 bg-uber-accent text-white text-[11px] font-black hover:bg-uber-hover">確定</button></div></div></div></div>`;
+    }
+
+    function openDuplicateModal(id) { state.duplicateModal = { isOpen: true, targetId: id, selectedDays: [state.activeDay] }; renderApp(); }
+    function executeDuplicate() {
+      const sch = state.scheduleRows.find(r => r.id === state.duplicateModal.targetId);
+      if (!sch) return;
+      state.duplicateModal.selectedDays.forEach(day => {
+        if (day !== state.activeDay) { state.scheduleRows.push({ ...sch, id: Date.now() + Math.random(), day: day }); }
+      });
+      state.duplicateModal.isOpen = false; showToast('複製しました'); renderApp();
+    }
+    function renderDuplicateModal() {
+      if (!state.duplicateModal.isOpen) return '';
+      return `<div class="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-6" onclick="state.duplicateModal.isOpen=false; renderApp();"><div class="bg-white border-[3px] border-uber w-full max-w-[450px] shadow-2xl" onclick="event.stopPropagation()"><div class="bg-uber-accent p-4 text-white text-[10px] font-black uppercase italic flex items-center gap-3"><i data-lucide="copy" class="w-4 h-4"></i>一括複製</div><div class="p-8"><p class="text-[12px] font-black text-uber-accent uppercase mb-6 italic opacity-60">複製先の曜日を選択してください</p><div class="grid grid-cols-4 gap-2 mb-8">${state.daysOfWeek.map(d => `<button onclick="const idx=state.duplicateModal.selectedDays.indexOf('${d}'); if(idx===-1)state.duplicateModal.selectedDays.push('${d}');else state.duplicateModal.selectedDays.splice(idx,1); renderApp();" class="py-3 border-2 font-black text-[12px] transition-all ${state.duplicateModal.selectedDays.includes(d) ? 'bg-uber-accent text-white border-uber-accent' : 'bg-white text-uber-accent border-uber-border hover:border-uber'}">${d}</button>`).join('')}</div><div class="flex gap-0 border-t border-uber -mx-8 -mb-8 mt-8"><button onclick="state.duplicateModal.isOpen=false; renderApp();" class="flex-1 px-6 py-5 bg-white text-[11px] font-black text-uber-accent border-r border-uber hover:bg-uber-secondary">キャンセル</button><button onclick="executeDuplicate()" class="flex-1 px-6 py-5 bg-uber-accent text-white text-[11px] font-black hover:bg-uber-hover">複製を実行</button></div></div></div></div>`;
+    }
+
+    function openCreateModal(day, course, startTime) { const endMin = timeToMinutes(startTime) + 60; state.modalState = { isOpen: true, mode: 'create', formData: { day, course, startTime, endTime: formatTime(Math.floor(endMin/60), endMin%60), room: '', patient: '', content: '', secondaryStaff: '' } }; renderApp(); }
+    function openEditModal(id, e) { if(e) e.stopPropagation(); const sch = state.scheduleRows.find(r => r.id === id); state.modalState = { isOpen: true, mode: 'edit', formData: { ...sch } }; renderApp(); }
+    function closeModal() { state.modalState.isOpen = false; renderApp(); }
+    function handleModalPatientSelect(v) { const p = state.patientMaster.find(x => x.office === state.activeOffice && x.name === v); if (p) document.getElementById('modal-room').value = p.room; }
+    function handleModalRoomInput(v) { const p = state.patientMaster.find(x => x.office === state.activeOffice && x.room === v && x.name); if (p) document.getElementById('modal-patient').value = p.name; }
+    function saveModalEvent() {
+      const d = state.modalState.formData; d.office = state.activeOffice; d.day = document.getElementById('modal-day').value; d.startTime = document.getElementById('modal-startTime').value; d.endTime = document.getElementById('modal-endTime').value; d.room = document.getElementById('modal-room').value; d.patient = document.getElementById('modal-patient').value; d.secondaryStaff = document.getElementById('modal-staff').value; d.content = document.getElementById('modal-content').value; d.isMultiple = !!d.secondaryStaff;
+      if (state.modalState.mode === 'create') { d.id = Date.now(); state.scheduleRows.push({ ...d }); } else { const idx = state.scheduleRows.findIndex(r => r.id === d.id); if(idx !== -1) state.scheduleRows[idx] = { ...d }; }
+      closeModal(); showToast('保存しました（未同期）');
+    }
+
+    function showContextMenu(id, e) { e.preventDefault(); e.stopPropagation(); state.contextMenuTargetId = id; const menu = document.getElementById('context-menu'); menu.style.display = 'block'; menu.style.left = e.clientX + 'px'; menu.style.top = e.clientY + 'px'; }
+    function handleContextMenuAction(action) {
+      const id = state.contextMenuTargetId; if (!id) return;
+      if (action === 'delete') { showConfirm('この予定を削除しますか？', () => { state.scheduleRows = state.scheduleRows.filter(r => r.id !== id); renderApp(); }); }
+      else if (action === 'duplicate') { openDuplicateModal(id); }
+      else if (action === 'edit') openEditModal(id);
+      document.getElementById('context-menu').style.display = 'none';
+    }
+
+    var draggedId = null;
+    function handleDragStart(id, e) { draggedId = id; e.target.classList.add('dragging'); e.dataTransfer.setData('text/plain', id); }
+    function handleDragEnd(e) { e.target.classList.remove('dragging'); draggedId = null; }
+    function handleDrop(e, course) { e.preventDefault(); const id = parseInt(e.dataTransfer.getData('text/plain'), 10); const sch = state.scheduleRows.find(r => r.id === id); if (!sch) return; const rect = e.currentTarget.getBoundingClientRect(); const startMin = 7 * 60 + (Math.floor((e.clientY - rect.top) / 15) * 15); const dur = timeToMinutes(sch.endTime) - timeToMinutes(sch.startTime); sch.course = course; sch.startTime = formatTime(Math.floor(startMin/60), startMin%60); sch.endTime = formatTime(Math.floor((startMin+dur)/60), (startMin+dur)%60); renderApp(); showToast('移動しました'); }
+
+    function renderLoginScreen() {
+      return `<div class="fixed inset-0 bg-white flex flex-col items-center justify-center text-uber-accent"><div class="border-[3px] border-uber-accent w-full max-w-[420px] shadow-2xl"><div class="bg-uber-accent p-8 text-white flex items-center gap-4"><i data-lucide="zap" class="w-8 h-8"></i><div><div class="text-2xl font-black uppercase italic tracking-tighter">承認表システム</div><div class="text-[11px] font-bold opacity-60 uppercase tracking-[0.3em] mt-1">Firebase Edition</div></div></div><div class="p-10 flex flex-col items-center gap-8 bg-white"><p class="text-[13px] font-black uppercase italic opacity-50 tracking-widest text-center">Google アカウントでログイン</p><button onclick="window.__firebaseGoogleSignIn && window.__firebaseGoogleSignIn()" class="w-full flex items-center justify-center gap-3 border-[3px] border-uber-accent px-8 py-5 bg-white hover:bg-uber-accent hover:text-white transition-all group text-uber-accent font-black uppercase italic text-[13px] tracking-widest"><svg class="w-5 h-5 shrink-0" viewBox="0 0 24 24"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>Google でログイン</button></div></div></div>`;
+    }
+
+    function renderApp() {
+      const app = document.getElementById('app');
+      if (!state.authChecked) { app.innerHTML = `<div class="fixed inset-0 bg-white z-[5000] flex flex-col items-center justify-center text-uber-accent uppercase italic"><div class="w-16 h-16 border-4 border-uber-accent border-t-transparent animate-spin mb-8"></div><div class="text-2xl font-black tracking-widest animate-pulse">認証確認中...</div></div>`; return; }
+      if (!state.isAuthenticated) { app.innerHTML = renderLoginScreen(); lucide.createIcons(); return; }
+      if (!state.isLoaded) { app.innerHTML = `<div class="fixed inset-0 bg-white z-[5000] flex flex-col items-center justify-center text-uber-accent uppercase italic"><div class="w-16 h-16 border-4 border-uber-accent border-t-transparent animate-spin mb-8"></div><div class="text-2xl font-black tracking-widest animate-pulse">Loading Data...</div></div>`; return; }
+      let mainContent = '';
+      if (state.activeMenu === 'visit_schedule') mainContent = renderVisitSchedule();
+      else if (state.activeMenu === 'schedule_setting') mainContent = renderCalendar();
+      else mainContent = renderMaster();
+      app.innerHTML = `${renderSidebar()}<main class="flex-1 flex flex-col h-screen overflow-hidden bg-white">${renderHeader()}${mainContent}</main>${renderModal()}${renderConfirmModal()}${renderDuplicateModal()}`;
+      lucide.createIcons();
+      updateTimeMeter();
+    }
+
+    function renderSidebar() {
+      if (state.viewingStaffSchedule) {
+        const staffName = state.viewingStaffSchedule;
+        const office = state.activeOffice;
+        const day = state.activeDay;
+        const assignedCourses = [];
+        Object.keys(state.courseAssignees).forEach(key => {
+          if (state.courseAssignees[key] === staffName) { const [o, d, t, c] = key.split('|'); if (o === office && d === day) assignedCourses.push(c); }
+        });
+        const staffRows = state.scheduleRows.filter(r => { if (r.office !== office || r.day !== day) return false; return assignedCourses.includes(r.course) || r.secondaryStaff === staffName; }).sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+        return `<aside class="w-[240px] border-r border-uber bg-white flex flex-col shrink-0 pt-8 z-20 no-print"><div class="px-6 mb-8 flex items-center justify-between"><div class="flex items-center gap-2 font-black uppercase text-uber-accent italic truncate"><i data-lucide="user" class="w-5 h-5 shrink-0"></i> ${staffName}</div><button onclick="closeStaffSchedule()" class="p-1.5 hover:bg-uber-accent hover:text-white text-uber-accent transition-colors"><i data-lucide="x" class="w-4 h-4"></i></button></div><div class="px-6 mb-4 text-[10px] font-black uppercase opacity-40 tracking-widest">${day}曜日のスケジュール</div><div class="flex-1 overflow-y-auto px-4 flex flex-col gap-3 pb-8">${staffRows.length === 0 ? `<div class="text-[11px] font-black italic opacity-30 text-center py-20 uppercase tracking-widest">予定なし</div>` : staffRows.map(r => `<div class="p-4 border border-uber bg-white flex flex-col gap-2 hover:bg-uber-secondary cursor-pointer group transition-all" onclick="openEditModal(${r.id})"><div class="flex items-center justify-between gap-2"><span class="text-[10px] font-black mono opacity-60">${r.startTime}-${r.endTime.replace(':','')}</span><span class="text-[9px] font-black px-1.5 py-0.5 bg-uber-accent text-white italic uppercase">${r.course}</span></div><div class="text-[12px] font-black uppercase italic truncate group-hover:text-uber-accent transition-colors">${r.patient || '---'}</div>${r.content ? `<div class="text-[9px] font-black opacity-40 truncate uppercase">${r.content}</div>` : ''}${r.secondaryStaff === staffName ? `<div class="flex items-center gap-1 mt-1 text-[8px] font-black text-uber-accent uppercase italic"><i data-lucide="users" class="w-3 h-3"></i> 同行担当</div>` : ''}</div>`).join('')}</div></aside>`;
+      }
+      const menus = [{ id: 'schedule_setting', icon: 'calendar-days', label: 'スケジュール設定' }, { id: 'visit_schedule', icon: 'table', label: '訪問スケジュール' }, { id: 'master', icon: 'database', label: 'マスタ管理' }];
+      return `<aside class="w-[240px] border-r border-uber bg-white flex flex-col shrink-0 pt-8 z-20 no-print"><div class="px-6 mb-10 flex items-center gap-2 font-black uppercase text-uber-accent italic"><i data-lucide="zap" class="w-6 h-6"></i> 承認表システム</div><nav class="flex flex-col">${menus.map(m => `<button onclick="setActiveMenu('${m.id}')" class="relative flex items-center gap-4 py-4 px-6 text-[12px] font-black uppercase tracking-widest ${state.activeMenu === m.id ? 'text-white bg-uber-accent' : 'text-uber-accent hover:bg-uber-secondary'} transition-all">${state.activeMenu === m.id ? '<div class="sidebar-active-indicator"></div>' : ''}<i data-lucide="${m.icon}" class="w-5 h-5"></i> ${m.label}</button>`).join('')}</nav><div class="mt-auto p-6 border-t border-uber-secondary flex items-center gap-3"><div class="w-10 h-10 bg-uber-accent flex items-center justify-center text-white font-black text-xs uppercase italic shrink-0">${(state.userInfo.name||'?').charAt(0)}</div><div class="overflow-hidden flex-1 min-w-0"><div class="text-[11px] font-black uppercase truncate">${state.userInfo.name}</div><div class="text-[9px] opacity-40 truncate uppercase mono">${state.userInfo.email || ''}</div></div><button onclick="window.__firebaseSignOut && window.__firebaseSignOut()" title="ログアウト" class="p-2 hover:bg-red-50 hover:text-red-500 text-uber-accent/30 transition-colors shrink-0"><i data-lucide="log-out" class="w-4 h-4"></i></button></div></aside>`;
+    }
+
+    function renderHeader() {
+      let title = state.activeMenu === 'visit_schedule' ? '訪問スケジュール' : state.activeMenu === 'schedule_setting' ? 'スケジュール設定' : 'マスタ管理';
+      return `<header class="flex items-center justify-between px-8 py-5 border-b border-uber bg-white shrink-0 text-uber-accent"><h1 class="text-[18px] font-black uppercase italic">${title}</h1><div class="flex items-center gap-4"><div class="relative dropdown ${state.openDropdownId === 'office-selector' ? 'is-open' : ''}"><button onclick="toggleDropdown(event, 'office', 'selector')" class="flex items-center gap-2 px-4 py-2 border border-uber text-[11px] font-black hover:bg-uber-accent hover:text-white transition-all uppercase"><i data-lucide="building-2" class="w-4 h-4"></i>${state.activeOffice}</button><div class="dropdown-content mt-1 border-2 shadow-xl">${state.officeMaster.map(o => `<button onmousedown="changeOffice('${o}')" class="w-full text-left px-4 py-3 text-[11px] font-black border-b border-uber-secondary hover:bg-uber-accent hover:text-white uppercase transition-colors">${o}</button>`).join('')}</div></div></div></header>`;
+    }
+
+    function renderVisitSchedule() {
+      const cats = ['早朝', '日中', '夜間']; const max = 10; const curRows = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === state.activeDay);
+      const patients = state.patientMaster.filter(p => p.office === state.activeOffice && p.name).sort((a,b) => (a.room||'').localeCompare(b.room||'', undefined, {numeric: true}));
+      let theadCat = cats.map(c => `<th colspan="${max}" class="border border-uber bg-uber-secondary p-2 text-[10px] font-black text-uber-accent uppercase tracking-widest">${c}介入</th>`).join('');
+      let tbody = patients.map(p => {
+        const pRows = curRows.filter(r => r.patient === p.name).sort((a,b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+        let totalTime = 0; let daytime = 0; let nighttime = 0; let rn = 0;
+        pRows.forEach(r => { const dur = timeToMinutes(r.endTime) - timeToMinutes(r.startTime); totalTime += dur; if (timeToMinutes(r.startTime) >= 8*60 && timeToMinutes(r.startTime) < 18*60) daytime++; else nighttime++; if (r.course.includes('看') || (r.isMultiple && r.secondaryStaff)) rn++; });
+        const ok = totalTime >= 30 && daytime >= 1 && nighttime >= 1 && rn >= 1;
+        let rowStr = `<tr class="hover:bg-uber-secondary transition-colors"><td class="border border-uber p-3 text-[11px] font-black mono text-center bg-white sticky left-0 z-10">${p.room}</td><td class="border border-uber p-3 text-[13px] font-black uppercase italic bg-white sticky left-[56px] z-10 w-40 truncate">${p.name}</td><td class="border border-uber p-3 text-center"><span class="${ok?'bg-uber-accent text-white':'bg-uber-secondary text-uber-accent/20'} px-2 py-1 text-[9px] font-black border border-uber">${ok?'適正':'不足'}</span></td>`;
+        cats.forEach(c => { const catRows = pRows.filter(r => getTimeCategory(r.startTime) === c); for(let i=0; i<max; i++) { const sch = catRows[i]; rowStr += `<td class="border border-uber p-1 text-center text-[9px] font-black mono">${sch ? sch.startTime+'-'+sch.endTime.replace(':','') : ''}</td>`; } }); return rowStr + '</tr>';
+      }).join('');
+      return `<div class="flex-1 flex flex-col overflow-hidden bg-white"><div class="px-8 py-5 border-b border-uber flex items-center justify-between no-print bg-white text-uber-accent"><div class="flex items-center gap-1"><div class="bg-uber-accent text-white px-3 py-3 font-black text-[12px] italic mr-2 border border-uber">${state.currentMonth}</div>${state.daysOfWeek.map((d,i) => `<button onclick="setActiveDay('${d}')" class="w-12 h-12 border border-uber flex flex-col items-center justify-center font-black transition-all ${state.activeDay===d ? 'bg-uber-accent text-white' : 'hover:bg-uber-secondary'}"><span class="text-[9px]">${d}</span><span class="text-[14px] mono">${state.weekDates[i]}</span></button>`).join('')}</div><button onclick="window.print()" class="px-8 py-3 bg-uber-accent text-white text-[12px] font-black flex items-center gap-2 uppercase tracking-widest hover:bg-uber-hover"><i data-lucide="printer" class="w-4 h-4"></i> 印刷</button></div><div class="flex-1 overflow-auto p-10 print:p-0"><table class="w-full border-collapse"><thead><tr class="bg-uber-accent text-white"><th rowspan="2" class="border border-uber p-3 w-16 text-[10px] uppercase sticky left-0 z-20 bg-uber-accent">居室</th><th rowspan="2" class="border border-uber p-3 w-40 text-[10px] uppercase sticky left-[56px] z-20 bg-uber-accent">利用者</th><th rowspan="2" class="border border-uber p-3 w-16 text-[10px] uppercase text-center bg-uber-accent">判定</th>${theadCat}</tr><tr class="bg-uber-secondary text-uber-accent">${Array.from({length:3},()=>Array.from({length:max},(_,i)=>`<th class="border border-uber p-1 text-[8px] font-black mono w-12">${i+1}</th>`).join('')).join('')}</tr></thead><tbody>${tbody}</tbody></table></div></div>`;
+    }
+
+    function renderCalendar() {
+      const courses = state.courseNames[state.activeTab];
+      return `<div class="flex flex-col flex-1 overflow-hidden">
+        <div class="px-8 py-5 border-b border-uber flex items-center justify-between no-print bg-white">
+          <div class="flex items-center gap-1">
+            <div class="bg-uber-accent text-white px-3 py-3 font-black text-[12px] italic mr-2 border border-uber">${state.currentMonth}</div>
+            ${state.daysOfWeek.map((d,i) => `<button onclick="setActiveDay('${d}')" class="w-12 h-12 border border-uber flex flex-col items-center justify-center font-black transition-all ${state.activeDay===d ? 'bg-uber-accent text-white' : 'hover:bg-uber-secondary'}"><span class="text-[9px]">${d}</span><span class="text-[14px] mono">${state.weekDates[i]}</span></button>`).join('')}
+          </div>
+          <div class="flex items-center gap-4">
+            <div class="flex border border-uber rounded-md overflow-hidden bg-uber-secondary p-0.5">
+              ${state.tabConfigs.map(t => `<button onclick="setActiveTab('${t.id}')" class="px-4 py-1.5 text-[10px] font-black uppercase tracking-tight transition-all rounded-[4px] ${state.activeTab===t.id ? 'bg-uber-accent text-white shadow-sm' : 'text-uber-accent/60 hover:text-uber-accent hover:bg-white'}">${t.label}</button>`).join('')}
+            </div>
+            <div class="w-px h-6 bg-uber opacity-20"></div>
+            <div class="flex items-center gap-1 bg-uber-secondary border border-uber rounded-md p-0.5">
+              <div class="relative group/course">
+                <select onchange="setActiveCourse(this.value)" class="appearance-none bg-white border border-uber pl-3 pr-8 py-1.5 text-[10px] font-black text-uber-accent outline-none cursor-pointer hover:border-uber-accent transition-all rounded-[4px] min-w-[80px]">
+                  ${courses.map(c => `<option value="${c}" ${state.activeCourse===c?'selected':''}>${c}</option>`).join('')}
+                </select>
+                <div class="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none opacity-40"><i data-lucide="chevron-down" class="w-3 h-3"></i></div>
+              </div>
+              <input type="text" value="${state.activeCourse}" onchange="updateCourseName(this.value)" class="bg-white border border-uber px-3 py-1.5 text-[10px] font-black text-uber-accent outline-none focus:border-uber-accent transition-all rounded-[4px] w-24 italic" placeholder="コース名..." />
+              <button onclick="addNewCourse()" class="p-1.5 hover:bg-white hover:text-uber-accent text-uber-accent/40 transition-all rounded-[4px]" title="コース追加"><i data-lucide="plus-circle" class="w-4 h-4"></i></button>
+              ${courses.length > 1 ? `<button onclick="deleteCourse()" class="p-1.5 hover:bg-red-50 hover:text-red-600 text-red-600/40 transition-all rounded-[4px]" title="コース削除"><i data-lucide="minus-circle" class="w-4 h-4"></i></button>` : ''}
+            </div>
+            <div class="w-px h-6 bg-uber opacity-20"></div>
+            <button onclick="syncData()" class="bg-uber-accent text-white px-5 py-2.5 text-[10px] font-black uppercase hover:bg-uber-hover flex items-center gap-2 transition-all rounded-md shadow-sm active:translate-y-0.5">
+              <i data-lucide="save" class="w-3.5 h-3.5"></i> 保存
+            </button>
+          </div>
+        </div>
+        <div class="flex border-b border-uber bg-[#FDFDFD] font-black uppercase italic text-[11px] shadow-sm relative z-10">
+          <div class="w-16 border-r border-uber flex items-center justify-center bg-uber-secondary/30"><i data-lucide="clock" class="w-4 h-4 opacity-20 text-uber-accent"></i></div>
+          ${courses.map(c => {
+            const assigneeKey = `${state.activeOffice}|${state.activeDay}|${state.activeTab}|${c}`;
+            const assignee = state.courseAssignees[assigneeKey];
+            const staffList = state.staffMaster.filter(s => s.office === state.activeOffice);
+            return `<div class="flex-1 border-r border-uber py-4 text-center flex flex-col items-center justify-center transition-colors hover:bg-uber-secondary/20">
+              <div class="text-[10px] font-black tracking-[0.2em] opacity-40 mb-2 text-uber-accent uppercase not-italic">${c}</div>
+              <div class="w-[85%] flex items-center gap-1.5">
+                <div class="relative flex-1 group/select">
+                  <select onchange="updateCourseAssignee('${c}', this.value)" class="w-full appearance-none bg-white border border-uber px-3 py-2 text-[10px] font-black text-uber-accent outline-none cursor-pointer hover:border-uber-accent focus:ring-1 focus:ring-uber-accent/20 transition-all text-center rounded-md shadow-sm">
+                    <option value="">+ 担当者なし</option>
+                    ${staffList.map(s => `<option value="${s.name}" ${assignee===s.name?'selected':''}>${s.name}</option>`).join('')}
+                  </select>
+                  <div class="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none opacity-30 group-hover/select:opacity-100 group-hover/select:text-uber-accent transition-all"><i data-lucide="chevron-down" class="w-3 h-3"></i></div>
+                </div>
+                ${assignee ? `<button onclick="openStaffSchedule('${assignee}')" class="p-2 bg-white border border-uber hover:bg-uber-accent hover:text-white text-uber-accent transition-all shrink-0 rounded-md shadow-sm hover:-translate-y-0.5 active:translate-y-0" title="担当者の予定を表示"><i data-lucide="layout-list" class="w-4 h-4"></i></button>` : ''}
+              </div>
+            </div>`;
+          }).join('')}
+        </div>
+        <div class="flex-1 overflow-y-auto flex relative bg-grid" id="calendar-body">
+          <div class="w-16 border-r border-uber bg-white sticky left-0 z-10">
+            ${Array.from({length:15}, (_,i)=>i+7).map(h => `<div class="h-[60px] relative"><span class="absolute -top-2.5 right-3 text-[10px] font-bold opacity-30 mono italic text-uber-accent">${h}:00</span></div>`).join('')}
+          </div>
+          <div class="flex-1 flex relative">
+            ${courses.map(c => `<div class="flex-1 border-r border-uber relative min-h-[900px] hover:bg-uber-secondary/5 transition-colors" onclick="const rect=this.getBoundingClientRect(); const startMin=7*60+Math.floor((event.clientY-rect.top)/15)*15; openCreateModal('${state.activeDay}', '${c}', formatTime(Math.floor(startMin/60), startMin%60));" ondragover="event.preventDefault()" ondrop="handleDrop(event, '${c}')">${renderEventsForCourse(state.activeDay, c)}</div>`).join('')}
+            <div id="now-line-calendar" class="hidden"></div>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function renderEventsForCourse(day, course) {
+      let evs = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === day && r.course === course);
+      return evs.map(ev => {
+        const top = timeToPx(ev.startTime); const height = Math.max(30, timeToPx(ev.endTime) - top);
+        return `<div class="cal-event absolute w-[calc(100%-4px)] left-0.5 bg-white p-2 overflow-hidden flex items-center gap-2 hover:bg-uber-accent hover:text-white transition-colors" draggable="true" ondragstart="handleDragStart(${ev.id}, event)" ondragend="handleDragEnd(event)" style="top:${top}px; height:${height}px;" onclick="event.stopPropagation(); openEditModal(${ev.id})" oncontextmenu="showContextMenu(${ev.id}, event)"><div class="text-[10px] font-black mono opacity-40 group-hover:opacity-100 shrink-0">${ev.startTime}</div><div class="text-[12px] font-black leading-tight italic uppercase truncate flex-1"><span>${ev.patient || '---'}</span></div>${ev.isMultiple && ev.secondaryStaff ? `<div class="flex items-center gap-1 text-[10px] font-black italic opacity-60 truncate"><i data-lucide="users" class="w-3.5 h-3.5"></i><span>${ev.secondaryStaff}</span></div>` : ''}</div>`;
+      }).join('');
+    }
+
+    function renderMaster() {
+      if (state.selectedMaster === '事業所マスタ') return renderOfficeMaster();
+      if (state.selectedMaster === '職員マスタ') return renderStaffMaster();
+      if (state.selectedMaster === '利用者マスタ') return renderPatientMaster();
+      const restrictedEmails = ["nhminamisenju@bestreha.com","nh-yatsuka@bestreha.com","nh-nishifunabashi@bestreha.com","nh-mizue@bestreha.com","nh-fujisawa@bestreha.com","nh-ichinomiya@bestreha.com","nh-kasukabe@bestreha.com","nh-omiyahigashi@bestreha.com","nh-matsudohigashi@bestreha.com","nh-nishiarai@bestreha.com","nh-kawagoeminami@bestreha.com","nh-kashiwatanaka@bestreha.com","nh-honchiba@bestreha.com"];
+      let titles = [{ label: '事業所マスタ', desc: '全拠点一覧', icon: 'building-2' }, { label: '職員マスタ', desc: 'スタッフ名簿', icon: 'users' }, { label: '利用者マスタ', desc: '利用者カルテ', icon: 'user-cog' }];
+      if (restrictedEmails.includes(state.userInfo.email)) titles = titles.filter(t => t.label !== '事業所マスタ');
+      return `<div class="p-16 bg-white flex-1 overflow-auto"><div class="mb-16 border-l-[10px] border-uber-accent pl-8 text-uber-accent uppercase italic"><h2 class="text-5xl font-black tracking-tighter mb-4">マスタ管理</h2><p class="text-[14px] font-bold opacity-40 tracking-[0.3em]">システム構成 ＆ データベース</p></div><div class="grid grid-cols-1 md:grid-cols-3 gap-0 border-t border-l border-uber max-w-6xl">${titles.map(t => `<button onclick="openMasterDetail('${t.label}')" class="group p-12 border-r border-b border-uber hover:bg-uber-accent hover:text-white transition-all flex flex-col gap-10 bg-white text-left uppercase italic text-uber-accent"><div class="w-16 h-16 bg-uber-accent text-white group-hover:bg-white group-hover:text-uber-accent transition-all flex items-center justify-center"><i data-lucide="${t.icon}" class="w-8 h-8"></i></div><div><span class="text-2xl font-black block tracking-tighter mb-2 uppercase text-uber-accent group-hover:text-white">${t.label}</span><span class="text-[11px] font-black uppercase tracking-[0.2em] opacity-40 group-hover:opacity-100 group-hover:text-white">${t.desc}</span></div></button>`).join('')}</div></div>`;
+    }
+    function renderOfficeMaster() { return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><h3 class="text-4xl mb-12 tracking-tighter uppercase italic font-black">事業所マスタ</h3><div class="grid grid-cols-2 lg:grid-cols-4 gap-0 border-t border-l border-uber">${state.officeMaster.map(name => `<div class="p-8 border-r border-b border-uber hover:bg-uber-accent hover:text-white transition-colors">${name}</div>`).join('')}</div></div>`; }
+    function renderStaffMaster() {
+      const currentStaff = state.staffMaster.filter(s => s.office === state.activeOffice);
+      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><div class="mb-16 border-l-[10px] border-uber-accent pl-8 text-uber-accent uppercase italic font-black"><h3 class="text-4xl font-black tracking-tighter mb-4 uppercase">職員マスタ</h3><div class="text-[12px] opacity-40">${state.activeOffice}</div></div><div class="grid grid-cols-1 md:grid-cols-3 gap-12 max-w-6xl">${["看護師", "准看護師", "訪問介護"].map(role => `<div class="flex flex-col gap-0 border border-uber bg-uber-secondary text-uber-accent"><div class="flex items-center justify-between p-5 bg-uber-accent text-white font-black uppercase italic"><h4 class="text-[11px] tracking-[0.3em]">${role}</h4><span class="text-[11px] font-black text-uber-accent bg-white px-3 py-1 mono">${currentStaff.filter(s=>s.role===role).length}</span></div><div class="flex flex-col">${currentStaff.filter(s=>s.role===role).map(s => `<div class="p-5 border-b border-uber font-black text-uber-accent hover:bg-uber-accent hover:text-white transition-all flex items-center justify-between group italic uppercase">${s.name}<i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></div>`).join('')}</div></div>`).join('')}</div></div>`;
+    }
+    function renderPatientMaster() {
+      const floors = [1, 2, 3, 4]; const currentPatients = state.patientMaster.filter(p => p.office === state.activeOffice);
+      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><h3 class="text-4xl mb-16 tracking-tighter uppercase italic font-black">利用者マスタ <span class="text-sm opacity-20 ml-4">${state.activeOffice}</span></h3><div class="grid grid-cols-1 md:grid-cols-4 gap-0 border-t border-l border-uber">${floors.map(f => `<div class="flex flex-col border-r border-uber"><div class="bg-uber-accent text-white p-4 font-black italic uppercase"><div class="text-[11px] tracking-[0.3em] font-black italic">${f}階</div></div><div class="flex flex-col">${currentPatients.filter(p => parseInt(p.floor) === f).map(p => `<div class="p-5 border-b border-uber flex justify-between items-center hover:bg-uber-secondary transition-all text-uber-accent w-full text-left"><span class="text-[11px] mono opacity-60 font-black">${p.room}</span><span class="text-[13px] italic uppercase font-black">${p.name || '<span class="opacity-60 not-italic">空室</span>'}</span></div>`).join('')}</div></div>`).join('')}</div></div>`;
+    }
+
+    function renderModal() {
+      if (!state.modalState.isOpen) return '';
+      const d = state.modalState.formData; const currentPatients = state.patientMaster.filter(p => p.office === state.activeOffice); const currentStaff = state.staffMaster.filter(s => s.office === state.activeOffice);
+      return `<div class="fixed inset-0 bg-black/40 z-[2000] flex items-center justify-center modal-backdrop p-6 text-uber-accent font-black uppercase italic" onclick="closeModal()"><div class="bg-white rounded-none border-[3px] border-uber w-full max-w-[560px] overflow-hidden shadow-none" onclick="event.stopPropagation()"><div class="bg-uber-accent p-6 text-white text-[12px] font-black tracking-[0.3em] uppercase italic">編集ツール / ${state.modalState.mode === 'create' ? '新規作成' : '更新'}</div><div class="p-10 flex flex-col gap-10 text-uber-accent"><div class="flex flex-col gap-3"><label class="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">内容・備考</label><input type="text" id="modal-content" placeholder="タスクを入力..." value="${d.content||''}" class="text-2xl font-black border-b-[4px] border-uber outline-none w-full pb-3 italic focus:bg-uber-secondary transition-colors text-uber-accent"></div><div class="grid grid-cols-2 gap-8"><div class="flex flex-col gap-3"><label class="text-[10px] font-black uppercase tracking-[0.2em] opacity-40 text-uber-accent">時間</label><div class="flex items-center gap-0 border border-uber overflow-hidden text-uber-accent"><input type="time" id="modal-startTime" value="${d.startTime}" class="flex-1 bg-white p-4 font-black text-sm outline-none hover:bg-uber-secondary text-uber-accent"><div class="w-px h-full bg-uber"></div><input type="time" id="modal-endTime" value="${d.endTime}" class="flex-1 bg-white p-4 font-black text-sm outline-none hover:bg-uber-secondary text-uber-accent"></div></div><div class="flex flex-col gap-3 text-uber-accent"><label class="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">曜日</label><select id="modal-day" class="w-full bg-white border border-uber p-4 font-black text-sm outline-none hover:bg-uber-secondary appearance-none text-uber-accent uppercase italic font-black">${state.daysOfWeek.map(day => `<option value="${day}" ${d.day===day?'selected':''}>${day}曜日</option>`).join('')}</select></div></div><div class="grid grid-cols-3 gap-8 text-uber-accent font-black"><div class="flex flex-col gap-3"><label class="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">部屋</label><input type="text" id="modal-room" value="${d.room||''}" oninput="handleModalRoomInput(this.value)" placeholder="101" class="bg-white border border-uber p-4 font-black text-sm outline-none hover:bg-uber-secondary text-uber-accent italic font-black"></div><div class="col-span-2 flex flex-col gap-3"><label class="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">利用者名</label><select id="modal-patient" onchange="handleModalPatientSelect(this.value)" class="w-full bg-white border border-uber p-4 font-black text-sm outline-none hover:bg-uber-secondary appearance-none text-uber-accent uppercase italic font-black"><option value="" ${!d.patient ? 'selected' : ''}>利用者を選択...</option>${currentPatients.map(p => `<option value="${p.name}" ${d.patient && d.patient===p.name?'selected':''}>${p.name || '(空室)'}</option>`).join('')}</select></div></div><div class="flex flex-col gap-3 text-uber-accent font-black italic uppercase"><label class="text-[10px] font-black uppercase tracking-[0.2em] opacity-40">同行スタッフ</label><select id="modal-staff" class="w-full bg-white border border-uber p-4 font-black text-sm outline-none hover:bg-uber-secondary appearance-none text-uber-accent italic font-black uppercase"><option value="">同行なし</option><optgroup label="スタッフリスト">${currentStaff.map(s => `<option value="${s.name}" ${d.secondaryStaff===s.name?'selected':''}>${s.name} [${s.role}]</option>`).join('')}</optgroup></select></div></div><div class="p-8 bg-uber-secondary flex justify-end gap-0 border-t border-uber">${state.modalState.mode === 'edit' ? `<button onclick="showConfirm('この予定を削除しますか？', () => { state.scheduleRows=state.scheduleRows.filter(x=>x.id!==${d.id}); closeModal(); });" class="px-10 py-5 bg-red-600 text-white text-[12px] font-black tracking-widest hover:bg-red-700 transition-all uppercase italic font-black mr-auto border-r border-uber"><i data-lucide="trash-2" class="w-4 h-4"></i>削除</button>` : ''}<button onclick="closeModal()" class="px-10 py-5 bg-white border-r border-uber text-[12px] font-black text-uber-accent uppercase tracking-widest hover:bg-uber-accent hover:text-white transition-all italic font-black uppercase">キャンセル</button><button onclick="saveModalEvent()" class="px-12 py-5 bg-uber-accent text-white text-[12px] font-black tracking-widest hover:bg-uber-hover transition-all uppercase italic font-black">${state.modalState.mode === 'create' ? '登録を確定' : '更新を確定'}</button></div></div></div>`;
+    }
+
+    // 初期描画（Firebase データ取得は後続のモジュールスクリプトが行う）
+    document.addEventListener('DOMContentLoaded', () => {
+      restoreUIState();
+      renderApp();
+      setInterval(updateTimeMeter, 60000);
+    });
+  </script>
+
+  <!-- ===== Firebase SDK v10 (Modular) ===== -->
+  <script type="module">
+    import { initializeApp }
+      from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+    import {
+      getFirestore, collection, getDocs, doc, getDoc, setDoc,
+      deleteDoc, onSnapshot, runTransaction, writeBatch
+    } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+    import {
+      getAuth, signInWithPopup, GoogleAuthProvider, onAuthStateChanged, signOut
+    } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+
+    // --- 初期化 ---
+    const app      = initializeApp(window.FIREBASE_CONFIG);
+    const db       = getFirestore(app);
+    const auth     = getAuth(app);
+    const provider = new GoogleAuthProvider();
+
+    // 環境バッジ表示
+    const badge = document.getElementById('env-badge');
+    if (badge) {
+      badge.textContent = window.APP_ENV === 'staging' ? 'STAGING' : '';
+      badge.className = 'env-badge ' + (window.APP_ENV === 'staging' ? 'staging' : 'production');
+      if (window.APP_ENV === 'staging') {
+        badge.style.cssText = 'position:fixed;bottom:8px;right:8px;z-index:9998;font-size:9px;font-weight:900;padding:2px 8px;background:#f59e0b;color:#000;pointer-events:none;';
+      }
+    }
+
+    // state への参照 (var 宣言により window.state として参照可能)
+    const state = window.state;
+
+    // 差分保存用: Firestore doc ID → 保存時点のスナップショット
+    const _originals = {};
+
+    // Firestore に書き込む際の安全なフォーマット
+    function toFirestore(row) {
+      return {
+        id:             row.id || Date.now(),
+        office:         row.office        || '',
+        day:            row.day           || '',
+        course:         row.course        || '',
+        startTime:      row.startTime     || '',
+        endTime:        row.endTime       || '',
+        room:           String(row.room   || ''),
+        patient:        row.patient       || '',
+        content:        row.content       || '',
+        isMultiple:     !!row.isMultiple,
+        secondaryStaff: row.secondaryStaff || ''
+      };
+    }
+
+    // -------------------------------------------------------
+    // syncData の Firebase 実装
+    // -------------------------------------------------------
+    async function firebaseSyncData() {
+      if (!state.isLoaded) return;
+      window.showToast('同期中...');
+
+      try {
+        const settingsRef = doc(db, 'settings', 'config');
+
+        // Step 1: トランザクション — 競合検出 + settings 更新
+        const newTs = await runTransaction(db, async (txn) => {
+          const snap = await txn.get(settingsRef);
+          const serverTs = snap.exists() ? snap.data().lastUpdate : 0;
+
+          if (state.lastUpdate && serverTs !== state.lastUpdate) {
+            throw new Error('CONFLICT');
+          }
+
+          const ts = Date.now();
+          txn.set(settingsRef, {
+            courseNames:    state.courseNames,
+            courseAssignees: state.courseAssignees,
+            lastUpdate:     ts
+          });
+          return ts;
+        });
+
+        // Step 2: バッチ書き込み — 差分のみ
+        const batch = writeBatch(db);
+        const schedulesRef = collection(db, 'schedules');
+
+        // 削除: _originals にあるが state.scheduleRows にない
+        const currentDocIds = new Set(
+          state.scheduleRows.filter(r => r._docId).map(r => r._docId)
+        );
+        Object.keys(_originals).forEach(docId => {
+          if (!currentDocIds.has(docId)) {
+            batch.delete(doc(db, 'schedules', docId));
+            delete _originals[docId];
+          }
+        });
+
+        // 追加: _docId がない新規行
+        state.scheduleRows.filter(r => !r._docId).forEach(row => {
+          const newRef = doc(schedulesRef);
+          row._docId = newRef.id;
+          batch.set(newRef, toFirestore(row));
+          _originals[newRef.id] = { ...row };
+        });
+
+        // 更新: _docId あり & 変更あり
+        state.scheduleRows.filter(r => r._docId).forEach(row => {
+          const orig = _originals[row._docId];
+          const curr = toFirestore(row);
+          if (!orig || JSON.stringify(curr) !== JSON.stringify(toFirestore(orig))) {
+            batch.update(doc(db, 'schedules', row._docId), curr);
+            _originals[row._docId] = { ...row };
+          }
+        });
+
+        await batch.commit();
+
+        state.lastUpdate = newTs;
+        window.renderApp();
+        window.showToast('保存完了');
+
+      } catch (e) {
+        if (e.message === 'CONFLICT') {
+          window.showConfirm(
+            '他のユーザーが既に更新しています。\n再読み込みしますか？',
+            () => location.reload()
+          );
+        } else {
+          window.showConfirm(
+            '保存エラー: ' + e.message + '\n再試行しますか？',
+            () => firebaseSyncData()
+          );
+        }
+      }
+    }
+
+    // グローバルに差し替え
+    window.__firebaseSyncData = firebaseSyncData;
+
+    // -------------------------------------------------------
+    // 初期データ読み込み
+    // -------------------------------------------------------
+    const RESTRICTED_ACCOUNTS = {
+      "nhminamisenju@bestreha.com":   "NH南千住",
+      "nh-yatsuka@bestreha.com":      "NH谷塚",
+      "nh-nishifunabashi@bestreha.com":"NH西船橋",
+      "nh-mizue@bestreha.com":        "NH瑞江",
+      "nh-fujisawa@bestreha.com":     "NH藤沢",
+      "nh-ichinomiya@bestreha.com":   "NH一宮",
+      "nh-kasukabe@bestreha.com":     "NH春日部",
+      "nh-omiyahigashi@bestreha.com": "NH大宮東",
+      "nh-matsudohigashi@bestreha.com":"NH松戸東",
+      "nh-nishiarai@bestreha.com":    "NH西新井",
+      "nh-kawagoeminami@bestreha.com":"NHすまいゆ藤間",
+      "nh-kashiwatanaka@bestreha.com":"NH柏たなか",
+      "nh-honchiba@bestreha.com":     "NH本千葉"
+    };
+
+    async function initFirebase(user) {
+      state.userInfo = {
+        name:  user.displayName || user.email,
+        email: user.email
+      };
+
+      try {
+        const [officesSnap, staffsSnap, patientsSnap, schedulesSnap, settingsSnap] =
+          await Promise.all([
+            getDocs(collection(db, 'offices')),
+            getDocs(collection(db, 'staffs')),
+            getDocs(collection(db, 'patients')),
+            getDocs(collection(db, 'schedules')),
+            getDoc(doc(db, 'settings', 'config'))
+          ]);
+
+        // offices: { name }
+        state.officeMaster = officesSnap.docs
+          .map(d => d.data().name)
+          .filter(Boolean);
+
+        // staffs: { office, name, role }
+        state.staffMaster = staffsSnap.docs.map(d => d.data());
+
+        // patients: { office, room, floor, name }
+        state.patientMaster = patientsSnap.docs.map(d => ({
+          ...d.data(),
+          room: String(d.data().room || '')
+        }));
+
+        // schedules: Firestore doc ID を _docId として保持
+        state.scheduleRows = schedulesSnap.docs.map(d => ({
+          ...d.data(),
+          _docId:     d.id,
+          isMultiple: d.data().isMultiple === true ||
+                      String(d.data().isMultiple).toUpperCase() === 'TRUE'
+        }));
+        // 差分管理用スナップショット初期化
+        state.scheduleRows.forEach(r => { _originals[r._docId] = { ...r }; });
+
+        // settings: courseNames, courseAssignees, lastUpdate
+        if (settingsSnap.exists()) {
+          const s = settingsSnap.data();
+          if (s.courseNames)    state.courseNames    = s.courseNames;
+          if (s.courseAssignees) state.courseAssignees = s.courseAssignees;
+          state.lastUpdate = s.lastUpdate || null;
+        }
+
+        // 事業所制限
+        const userEmail = user.email;
+        if (RESTRICTED_ACCOUNTS[userEmail]) {
+          state.officeMaster = [RESTRICTED_ACCOUNTS[userEmail]];
+          state.activeOffice  = RESTRICTED_ACCOUNTS[userEmail];
+        } else if (state.officeMaster.length &&
+                   !state.officeMaster.includes(state.activeOffice)) {
+          state.activeOffice = state.officeMaster[0];
+        }
+
+        state.isLoaded = true;
+        window.renderApp();
+        window.showToast('同期完了');
+
+        // settings のリモート変更監視（競合検知）
+        onSnapshot(doc(db, 'settings', 'config'), (snap) => {
+          if (!snap.exists() || !state.isLoaded) return;
+          const remoteTs = snap.data().lastUpdate;
+          if (state.lastUpdate && remoteTs !== state.lastUpdate) {
+            window.showToast('他のユーザーがデータを更新しました。再読み込みを推奨します。');
+          }
+        });
+
+      } catch (e) {
+        console.error('Firebase 初期化エラー:', e);
+        state.isLoaded = true;
+        window.renderApp();
+        window.showConfirm(
+          '通信エラー: ' + e.message + '\nページを再読み込みしますか？',
+          () => location.reload()
+        );
+      }
+    }
+
+    // Google ログイン
+    window.__firebaseGoogleSignIn = async () => {
+      try {
+        await signInWithPopup(auth, provider);
+      } catch (e) {
+        window.showToast('ログインに失敗しました: ' + (e.message || e.code));
+        console.error(e);
+      }
+    };
+
+    // サインアウト
+    window.__firebaseSignOut = async () => {
+      await signOut(auth);
+      state.isAuthenticated = false;
+      state.isLoaded = false;
+      state.userInfo = { name: '', email: '' };
+      window.renderApp();
+    };
+
+    // 認証状態監視 — ログイン済みならデータ読み込み、未ログインならログイン画面
+    onAuthStateChanged(auth, (user) => {
+      state.authChecked = true;
+      if (user) {
+        state.isAuthenticated = true;
+        initFirebase(user);
+      } else {
+        state.isAuthenticated = false;
+        state.isLoaded = false;
+        window.renderApp();
+      }
+    });
+  </script>
+</body>
+</html>

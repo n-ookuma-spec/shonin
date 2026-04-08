@@ -1,0 +1,7 @@
+.firebase/
+.claude/
+.gemini/
+*.log
+.DS_Store
+*.gsheet
+desktop.ini
