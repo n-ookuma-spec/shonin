@@ -420,6 +420,36 @@
       const h = parseInt(timeStr?.split(':')[0] || '0', 10);
       if (h < 8) return '早朝'; if (h >= 18) return '夜間'; return '日中';
     }
+    function getScheduleRole(course) {
+      return (course || '').includes('介') ? '介護' : '看護';
+    }
+    function getTimeCategoryStyles(timeStr) {
+      const category = getTimeCategory(timeStr);
+      if (category === '早朝') return { card: 'bg-sky-50 border-sky-300 text-sky-900', badge: 'bg-sky-100 text-sky-800 border-sky-300' };
+      if (category === '夜間') return { card: 'bg-slate-100 border-slate-400 text-slate-800', badge: 'bg-slate-200 text-slate-700 border-slate-400' };
+      return { card: 'bg-amber-50 border-amber-300 text-amber-900', badge: 'bg-amber-100 text-amber-800 border-amber-300' };
+    }
+    function getRoleStyles(course) {
+      return getScheduleRole(course) === '介護'
+        ? { badge: 'bg-emerald-100 text-emerald-800 border-emerald-300', pill: 'bg-emerald-700 text-white' }
+        : { badge: 'bg-rose-100 text-rose-800 border-rose-300', pill: 'bg-rose-700 text-white' };
+    }
+    function getVisitSlotCell(row) {
+      if (!row) return '<td class="border border-uber p-1 bg-white"></td>';
+      const timeStyles = getTimeCategoryStyles(row.startTime);
+      return `<td class="border border-uber p-1.5 bg-white"><button onclick="openPatientPatternSidebar('${(row.patient || '').replace(/'/g, "\\'")}')" class="w-full text-left border px-1.5 py-1 ${timeStyles.card} hover:opacity-80 transition-opacity"><div class="text-[9px] font-black mono leading-none">${row.startTime}-${row.endTime.replace(':','')}</div><div class="text-[8px] font-black mt-1 truncate">${getTimeCategory(row.startTime)}</div></button></td>`;
+    }
+    function getPatientWeeklyPatternSummary(patientName) {
+      const patient = state.patientMaster.find(p => p.name === patientName && p.office === state.activeOffice);
+      if (!patient) return [];
+      const patterns = normalizePatientPatterns(patient.patterns);
+      return state.daysOfWeek.map(day => ({
+        day,
+        entries: (patterns[day] || [])
+          .filter(entry => entry.enabled && entry.course && timeToMinutes(entry.endTime) > timeToMinutes(entry.startTime))
+          .sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime))
+      }));
+    }
 
     function updateTimeMeter() {
       const now = new Date(); const currentDayName = state.daysOfWeek[(now.getDay() + 6) % 7]; const h = now.getHours(); const m = now.getMinutes();
@@ -439,7 +469,7 @@
       renderApp();
     }
 
-    function changeOffice(office) { state.activeOffice = office; state.openDropdownId = null; saveUIState(); renderApp(); }
+    function changeOffice(office) { state.activeOffice = office; state.openDropdownId = null; state.viewingStaffSchedule = null; state.viewingPatientPatterns = null; saveUIState(); renderApp(); }
     function setActiveMenu(m) { state.activeMenu = m; state.selectedMaster = null; saveUIState(); renderApp(); }
     function setScheduleViewMode(m) { state.scheduleViewMode = m; saveUIState(); renderApp(); }
     function setActiveTab(t) { state.activeTab = t; state.activeCourse = (state.courseNames[t] && state.courseNames[t][0]) || '看1'; saveUIState(); renderApp(); }
@@ -665,6 +695,12 @@
     }
 
     function renderSidebar() {
+      if (state.viewingPatientPatterns) {
+        const patientName = state.viewingPatientPatterns;
+        const patient = state.patientMaster.find(p => p.name === patientName && p.office === state.activeOffice);
+        const weeklyPatterns = patient ? getPatientWeeklyPatternSummary(patientName) : [];
+        return `<aside class="sidebar-width w-[280px] border-r border-uber bg-white flex flex-col shrink-0 pt-8 z-20 no-print"><div class="px-6 mb-8 flex items-center justify-between gap-3"><div class="min-w-0"><div class="flex items-center gap-2 font-black uppercase text-uber-accent italic truncate"><i data-lucide="user-round-search" class="w-5 h-5 shrink-0"></i>${patientName}</div><div class="text-[10px] opacity-40 mt-2">${patient?.room ? patient.room + '号室' : '利用者週間パターン'}</div></div><button onclick="closePatientPatternSidebar()" class="p-1.5 hover:bg-uber-accent hover:text-white text-uber-accent transition-colors"><i data-lucide="x" class="w-4 h-4"></i></button></div><div class="px-6 mb-4 text-[10px] font-black uppercase opacity-40 tracking-widest">1週間の設定一覧</div><div class="flex-1 overflow-y-auto px-4 flex flex-col gap-3 pb-8">${!patient ? `<div class="text-[11px] font-black italic opacity-30 text-center py-20 uppercase tracking-widest">利用者が見つかりません</div>` : weeklyPatterns.map(({ day, entries }) => `<div class="border border-uber bg-white"><div class="px-4 py-3 border-b border-uber bg-uber-secondary flex items-center justify-between"><span class="text-[10px] font-black uppercase">${day}</span><span class="text-[9px] font-black opacity-40">${entries.length}件</span></div><div class="p-3 flex flex-col gap-2">${entries.length ? entries.map(entry => { const timeStyles = getTimeCategoryStyles(entry.startTime); const roleStyles = getRoleStyles(entry.course); return `<div class="border p-3 ${timeStyles.card}"><div class="flex items-center justify-between gap-2 mb-2"><span class="text-[10px] font-black mono">${entry.startTime}-${entry.endTime}</span><div class="flex items-center gap-1.5"><span class="px-2 py-0.5 text-[8px] font-black border ${roleStyles.badge}">${getScheduleRole(entry.course)}</span><span class="px-2 py-0.5 text-[8px] font-black border ${timeStyles.badge}">${getTimeCategory(entry.startTime)}</span></div></div><div class="text-[10px] font-black">${entry.course || 'コース未設定'}</div>${entry.content ? `<div class="text-[9px] font-black opacity-60 mt-1">${entry.content}</div>` : ''}</div>`; }).join('') : `<div class="text-[10px] font-black opacity-30 text-center py-6">設定なし</div>`}</div></div>`).join('')}</div></aside>`;
+      }
       if (state.viewingStaffSchedule) {
         const staffName = state.viewingStaffSchedule;
         const office = state.activeOffice;
@@ -685,7 +721,7 @@
       return `<header class="header-px header-py flex items-center justify-between px-8 py-5 border-b border-uber bg-white shrink-0 text-uber-accent">
         <div class="flex items-center gap-6">
           <h1 class="text-[18px] font-black uppercase italic text-base-adj">${title}</h1>
-          ${state.activeMenu === 'schedule_setting' ? `<button onclick="openCreateModal(state.activeDay, state.activeCourse, '09:00')" class="flex items-center gap-2 px-6 py-2.5 bg-uber-accent text-white text-[11px] font-black uppercase italic hover:bg-uber-hover transition-all shadow-lg active:scale-95"><i data-lucide="plus" class="w-4 h-4"></i>作成</button>` : ''}
+          ${state.activeMenu === 'schedule_setting' ? `<button onclick="openCreateModal(state.activeDay, state.activeCourse, '09:00')" class="flex items-center gap-2 px-6 py-2.5 bg-uber-accent text-white text-[11px] font-black uppercase italic hover:bg-uber-hover transition-all shadow-lg active:scale-95"><i data-lucide="plus" class="w-4 h-4"></i>作成</button><button onclick="expandPatientPatternsToSchedules()" class="flex items-center gap-2 px-5 py-2.5 border border-uber bg-white text-[11px] font-black uppercase hover:bg-uber-secondary transition-all"><i data-lucide="rows-3" class="w-4 h-4"></i>週間パターンを展開</button>` : ''}
         </div>
         <div class="flex items-center gap-4">
           <div class="relative dropdown ${state.openDropdownId === 'office-selector' ? 'is-open' : ''}">
@@ -697,18 +733,27 @@
     }
 
     function renderVisitSchedule() {
-      const cats = ['早朝', '日中', '夜間']; const max = 10; const curRows = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === state.activeDay);
+      const roleLabels = ['看護', '介護']; const max = 8; const curRows = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === state.activeDay);
       const patients = state.patientMaster.filter(p => p.office === state.activeOffice && p.name).sort((a,b) => (a.room||'').localeCompare(b.room||'', undefined, {numeric: true}));
-      let theadCat = cats.map(c => `<th colspan="${max}" class="border border-uber bg-uber-secondary p-2 text-[10px] font-black text-uber-accent uppercase tracking-widest">${c}介入</th>`).join('');
+      let theadCat = roleLabels.map(label => `<th colspan="${max}" class="border border-uber bg-uber-secondary p-2 text-[10px] font-black text-uber-accent uppercase tracking-widest">${label}介入</th>`).join('');
       let tbody = patients.map(p => {
         const pRows = curRows.filter(r => r.patient === p.name).sort((a,b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
-        let totalTime = 0; let daytime = 0; let nighttime = 0; let rn = 0;
-        pRows.forEach(r => { const dur = timeToMinutes(r.endTime) - timeToMinutes(r.startTime); totalTime += dur; if (timeToMinutes(r.startTime) >= 8*60 && timeToMinutes(r.startTime) < 18*60) daytime++; else nighttime++; if (r.course.includes('看') || (r.isMultiple && r.secondaryStaff)) rn++; });
+        const nurseRows = pRows.filter(r => getScheduleRole(r.course) === '看護');
+        const careRows = pRows.filter(r => getScheduleRole(r.course) === '介護');
+        let totalTime = 0; let daytime = 0; let nighttime = 0; let rn = 0; let nurseTime = 0; let careTime = 0;
+        pRows.forEach(r => {
+          const dur = timeToMinutes(r.endTime) - timeToMinutes(r.startTime);
+          totalTime += dur;
+          if (getScheduleRole(r.course) === '看護') nurseTime += dur; else careTime += dur;
+          if (timeToMinutes(r.startTime) >= 8*60 && timeToMinutes(r.startTime) < 18*60) daytime++; else nighttime++;
+          if (r.course.includes('看') || (r.isMultiple && r.secondaryStaff)) rn++;
+        });
         const ok = totalTime >= 30 && daytime >= 1 && nighttime >= 1 && rn >= 1;
-        let rowStr = `<tr class="hover:bg-uber-secondary transition-colors"><td class="border border-uber p-3 text-[11px] font-black mono text-center bg-white sticky left-0 z-10">${p.room}</td><td class="border border-uber p-3 text-[13px] font-black uppercase italic bg-white sticky left-[56px] z-10 w-40 truncate">${p.name}</td><td class="border border-uber p-3 text-center"><span class="${ok?'bg-uber-accent text-white':'bg-uber-secondary text-uber-accent/20'} px-2 py-1 text-[9px] font-black border border-uber">${ok?'適正':'不足'}</span></td>`;
-        cats.forEach(c => { const catRows = pRows.filter(r => getTimeCategory(r.startTime) === c); for(let i=0; i<max; i++) { const sch = catRows[i]; rowStr += `<td class="border border-uber p-1 text-center text-[9px] font-black mono">${sch ? sch.startTime+'-'+sch.endTime.replace(':','') : ''}</td>`; } }); return rowStr + '</tr>';
+        let rowStr = `<tr class="hover:bg-uber-secondary/40 transition-colors"><td class="border border-uber p-3 text-[11px] font-black mono text-center bg-white sticky left-0 z-10">${p.room}</td><td class="border border-uber p-3 bg-white sticky left-[56px] z-10 w-44"><button onclick="openPatientPatternSidebar('${p.name.replace(/'/g, "\\'")}')" class="text-left w-full text-[13px] font-black uppercase italic truncate hover:text-uber-accent transition-colors">${p.name}</button></td><td class="border border-uber p-2 bg-white"><div class="min-w-[120px] flex flex-col gap-1"><div class="px-2 py-1 text-[9px] font-black border ${getRoleStyles('看').badge}">看護 ${nurseTime}分</div><div class="px-2 py-1 text-[9px] font-black border ${getRoleStyles('介').badge}">介護 ${careTime}分</div></div></td><td class="border border-uber p-3 text-center bg-white"><span class="${ok?'bg-uber-accent text-white':'bg-uber-secondary text-uber-accent/20'} px-2 py-1 text-[9px] font-black border border-uber">${ok?'適正':'不足'}</span></td>`;
+        [nurseRows, careRows].forEach(rows => { for(let i=0; i<max; i++) { rowStr += getVisitSlotCell(rows[i]); } });
+        return rowStr + '</tr>';
       }).join('');
-      return `<div class="flex-1 flex flex-col overflow-hidden bg-white"><div class="px-8 py-5 border-b border-uber flex items-center justify-between no-print bg-white text-uber-accent"><div class="flex items-center gap-1"><div class="bg-uber-accent text-white px-3 py-3 font-black text-[12px] italic mr-2 border border-uber">${state.currentMonth}</div>${state.daysOfWeek.map((d,i) => `<button onclick="setActiveDay('${d}')" class="w-12 h-12 border border-uber flex flex-col items-center justify-center font-black transition-all ${state.activeDay===d ? 'bg-uber-accent text-white' : 'hover:bg-uber-secondary'}"><span class="text-[9px]">${d}</span><span class="text-[14px] mono">${state.weekDates[i]}</span></button>`).join('')}</div><button onclick="window.print()" class="px-8 py-3 bg-uber-accent text-white text-[12px] font-black flex items-center gap-2 uppercase tracking-widest hover:bg-uber-hover"><i data-lucide="printer" class="w-4 h-4"></i> 印刷</button></div><div class="flex-1 overflow-auto p-10 print:p-0"><table class="w-full border-collapse"><thead><tr class="bg-uber-accent text-white"><th rowspan="2" class="border border-uber p-3 w-16 text-[10px] uppercase sticky left-0 z-20 bg-uber-accent">居室</th><th rowspan="2" class="border border-uber p-3 w-40 text-[10px] uppercase sticky left-[56px] z-20 bg-uber-accent">利用者</th><th rowspan="2" class="border border-uber p-3 w-16 text-[10px] uppercase text-center bg-uber-accent">判定</th>${theadCat}</tr><tr class="bg-uber-secondary text-uber-accent">${Array.from({length:3},()=>Array.from({length:max},(_,i)=>`<th class="border border-uber p-1 text-[8px] font-black mono w-12">${i+1}</th>`).join('')).join('')}</tr></thead><tbody>${tbody}</tbody></table></div></div>`;
+      return `<div class="flex-1 flex flex-col overflow-hidden bg-white"><div class="px-8 py-5 border-b border-uber flex items-center justify-between no-print bg-white text-uber-accent"><div class="flex items-center gap-2">${state.daysOfWeek.map(d => `<button onclick="setActiveDay('${d}')" class="w-14 h-12 border border-uber flex items-center justify-center font-black transition-all ${state.activeDay===d ? 'bg-uber-accent text-white' : 'hover:bg-uber-secondary'}"><span class="text-[11px]">${d}</span></button>`).join('')}</div><button onclick="window.print()" class="px-8 py-3 bg-uber-accent text-white text-[12px] font-black flex items-center gap-2 uppercase tracking-widest hover:bg-uber-hover"><i data-lucide="printer" class="w-4 h-4"></i> 印刷</button></div><div class="flex-1 overflow-auto p-10 print:p-0"><table class="w-full border-collapse"><thead><tr class="bg-uber-accent text-white"><th rowspan="2" class="border border-uber p-3 w-16 text-[10px] uppercase sticky left-0 z-20 bg-uber-accent">居室</th><th rowspan="2" class="border border-uber p-3 w-44 text-[10px] uppercase sticky left-[56px] z-20 bg-uber-accent">利用者</th><th rowspan="2" class="border border-uber p-3 w-32 text-[10px] uppercase text-center bg-uber-accent">介入合計</th><th rowspan="2" class="border border-uber p-3 w-16 text-[10px] uppercase text-center bg-uber-accent">判定</th>${theadCat}</tr><tr class="bg-uber-secondary text-uber-accent">${Array.from({length:2},()=>Array.from({length:max},(_,i)=>`<th class="border border-uber p-1 text-[8px] font-black mono w-[76px]">${i+1}</th>`).join('')).join('')}</tr></thead><tbody>${tbody}</tbody></table></div></div>`;
     }
 
     function renderCalendar() {
@@ -814,7 +859,9 @@
         : '';
       return dragPreview + evs.map(ev => {
         const top = timeToPx(ev.startTime); const height = Math.max(30, timeToPx(ev.endTime) - top);
-        return `<div class="cal-event absolute w-[calc(100%-4px)] left-0.5 bg-white p-2 overflow-hidden flex items-center gap-2 hover:bg-uber-accent hover:text-white transition-colors" draggable="true" ondragstart="handleDragStart(${ev.id}, event)" ondragend="handleDragEnd(event)" onmousedown="event.stopPropagation()" style="top:${top}px; height:${height}px;" onclick="event.stopPropagation(); openEditModal(${ev.id})" oncontextmenu="showContextMenu(${ev.id}, event)"><div class="text-[10px] font-black mono opacity-40 group-hover:opacity-100 shrink-0">${ev.startTime}</div><div class="text-[12px] font-black leading-tight italic uppercase truncate flex-1"><span>${ev.patient || '---'}</span></div>${ev.isMultiple && ev.secondaryStaff ? `<div class="flex items-center gap-1 text-[10px] font-black italic opacity-60 truncate"><i data-lucide="users" class="w-3.5 h-3.5"></i><span>${ev.secondaryStaff}</span></div>` : ''}</div>`;
+        const timeStyles = getTimeCategoryStyles(ev.startTime);
+        const roleStyles = getRoleStyles(ev.course);
+        return `<div class="cal-event absolute w-[calc(100%-4px)] left-0.5 p-2 overflow-hidden flex flex-col gap-1 transition-colors border ${timeStyles.card} hover:opacity-85" draggable="true" ondragstart="handleDragStart(${ev.id}, event)" ondragend="handleDragEnd(event)" onmousedown="event.stopPropagation()" style="top:${top}px; height:${height}px;" onclick="event.stopPropagation(); openEditModal(${ev.id})" oncontextmenu="showContextMenu(${ev.id}, event)"><div class="flex items-center justify-between gap-2"><div class="text-[10px] font-black mono shrink-0">${ev.startTime}</div><div class="flex items-center gap-1"><span class="px-1.5 py-0.5 text-[8px] font-black border ${timeStyles.badge}">${getTimeCategory(ev.startTime)}</span><span class="px-1.5 py-0.5 text-[8px] font-black ${roleStyles.pill}">${getScheduleRole(ev.course)}</span></div></div><div class="text-[12px] font-black leading-tight italic uppercase truncate flex-1">${ev.patient || '---'}</div>${ev.content ? `<div class="text-[9px] font-black opacity-70 truncate">${ev.content}</div>` : ''}${ev.isMultiple && ev.secondaryStaff ? `<div class="flex items-center gap-1 text-[9px] font-black italic opacity-70 truncate"><i data-lucide="users" class="w-3.5 h-3.5"></i><span>${ev.secondaryStaff}</span></div>` : ''}</div>`;
       }).join('');
     }
 
@@ -868,44 +915,56 @@
       const d = state.patientModal.formData;
       const courseOptions = getAllCourseOptions();
       return `<div class="fixed inset-0 bg-black/60 z-[3000] flex items-center justify-center p-6 text-uber-accent font-black uppercase italic" onclick="closePatientModal()">
-        <div class="bg-white border-[3px] border-uber w-full max-w-[900px] shadow-2xl overflow-hidden" onclick="event.stopPropagation()">
+        <div class="bg-white border-[3px] border-uber w-full max-w-[1600px] max-h-[92vh] shadow-2xl overflow-hidden" onclick="event.stopPropagation()">
           <div class="bg-uber-accent p-6 text-white flex justify-between items-center">
             <span class="text-[12px] tracking-widest uppercase italic font-black">利用者編集: ${d.name || '新規'}</span>
             <button onclick="closePatientModal()"><i data-lucide="x" class="w-6 h-6"></i></button>
           </div>
-          <div class="p-10 flex flex-col gap-10">
-            <div class="grid grid-cols-3 gap-8">
-              <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">氏名</label><input type="text" value="${d.name}" oninput="state.patientModal.formData.name=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none focus:bg-uber-secondary italic text-uber-accent"></div>
-              <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">居室</label><input type="text" value="${d.room}" oninput="state.patientModal.formData.room=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none focus:bg-uber-secondary italic text-uber-accent"></div>
-              <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">階数</label><select onchange="state.patientModal.formData.floor=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none appearance-none bg-white italic text-uber-accent">${[1,2,3,4].map(f => `<option value="${f}" ${d.floor==f?'selected':''}>${f}階</option>`).join('')}</select></div>
-            </div>
-            
-            <div class="flex flex-col gap-4">
-              <div class="text-[11px] font-black tracking-widest border-l-4 border-uber-accent pl-4 mb-2 uppercase italic">週間パターン設定</div>
-              <div class="grid grid-cols-1 xl:grid-cols-7 gap-3">
+          <div class="p-8 lg:p-10 overflow-y-auto max-h-[calc(92vh-150px)]">
+            <div class="grid grid-cols-1 xl:grid-cols-[320px,1fr] gap-8 items-start">
+              <div class="border border-uber bg-uber-secondary/40 p-6 flex flex-col gap-6">
+                <div>
+                  <div class="text-[10px] opacity-40 mb-2">利用者情報</div>
+                  <div class="text-[22px] tracking-tight">${d.name || '新規利用者'}</div>
+                </div>
+                <div class="grid grid-cols-1 gap-5">
+                  <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">氏名</label><input type="text" value="${d.name}" oninput="state.patientModal.formData.name=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none focus:bg-white italic text-uber-accent bg-transparent"></div>
+                  <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">居室</label><input type="text" value="${d.room}" oninput="state.patientModal.formData.room=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none focus:bg-white italic text-uber-accent bg-transparent"></div>
+                  <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">階数</label><select onchange="state.patientModal.formData.floor=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none appearance-none bg-transparent italic text-uber-accent">${[1,2,3,4].map(f => `<option value="${f}" ${d.floor==f?'selected':''}>${f}階</option>`).join('')}</select></div>
+                </div>
+                <div class="border-t border-uber pt-4 text-[10px] opacity-50 leading-5">曜日ごとに複数パターンを登録できます。コースと時間帯が見分けやすいよう、早朝・日中・夜間で色分けしています。</div>
+              </div>
+
+              <div class="flex flex-col gap-4">
+                <div class="text-[11px] font-black tracking-widest border-l-4 border-uber-accent pl-4 uppercase italic">週間パターン設定</div>
+                <div class="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-4">
                 ${state.daysOfWeek.map(day => {
                   const entries = d.patterns[day] || [createEmptyPatternEntry()];
-                  return `<div class="border border-uber p-4 flex flex-col gap-3 bg-white min-h-[260px]">
-                    <div class="flex items-center justify-between border-b border-uber/10 pb-2">
-                      <span class="text-[11px] font-black">${day}</span>
-                      <button onclick="addPatternEntry('${day}')" class="flex items-center gap-1 text-[9px] font-black px-2 py-1 border border-uber hover:bg-uber-accent hover:text-white transition-all"><i data-lucide="plus" class="w-3 h-3"></i>追加</button>
+                  return `<div class="border border-uber p-4 lg:p-5 flex flex-col gap-4 bg-white min-h-[320px]">
+                    <div class="flex items-center justify-between border-b border-uber/10 pb-3">
+                      <div><span class="text-[16px] font-black">${day}</span><div class="text-[9px] opacity-40 mt-1">${entries.length}パターン</div></div>
+                      <button onclick="addPatternEntry('${day}')" class="flex items-center gap-1 text-[10px] font-black px-3 py-1.5 border border-uber hover:bg-uber-accent hover:text-white transition-all"><i data-lucide="plus" class="w-3 h-3"></i>追加</button>
                     </div>
                     <div class="flex flex-col gap-3">
-                      ${entries.map(entry => `<div class="border border-uber/20 p-3 flex flex-col gap-2 ${entry.enabled ? 'bg-uber-secondary/60' : 'opacity-50'}">
+                      ${entries.map(entry => { const timeStyles = getTimeCategoryStyles(entry.startTime); const roleStyles = getRoleStyles(entry.course); return `<div class="border p-4 flex flex-col gap-3 ${entry.enabled ? timeStyles.card : 'bg-white opacity-50 border-uber/20'}">
                         <div class="flex items-center justify-between gap-2">
-                          <label class="flex items-center gap-2 text-[9px] font-black"><input type="checkbox" ${entry.enabled ? 'checked' : ''} onchange="updatePatternEntry('${day}', ${entry.id}, 'enabled', this.checked)" class="accent-uber-accent">有効</label>
-                          <button onclick="removePatternEntry('${day}', ${entry.id})" class="p-1 text-red-600/60 hover:text-red-600 transition-colors"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                          <label class="flex items-center gap-2 text-[10px] font-black"><input type="checkbox" ${entry.enabled ? 'checked' : ''} onchange="updatePatternEntry('${day}', ${entry.id}, 'enabled', this.checked)" class="accent-uber-accent">有効</label>
+                          <div class="flex items-center gap-2">
+                            <span class="px-2 py-0.5 text-[8px] font-black border ${timeStyles.badge}">${getTimeCategory(entry.startTime)}</span>
+                            <button onclick="removePatternEntry('${day}', ${entry.id})" class="p-1 text-red-600/60 hover:text-red-600 transition-colors"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                          </div>
                         </div>
-                        <select onchange="updatePatternEntry('${day}', ${entry.id}, 'course', this.value)" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
+                        <select onchange="updatePatternEntry('${day}', ${entry.id}, 'course', this.value)" class="text-[11px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
                           <option value="">コース選択</option>
                           ${courseOptions.map(course => `<option value="${course}" ${entry.course === course ? 'selected' : ''}>${course}</option>`).join('')}
                         </select>
-                        <div class="grid grid-cols-2 gap-2">
-                          <input type="time" value="${entry.startTime}" onchange="updatePatternEntry('${day}', ${entry.id}, 'startTime', this.value)" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
-                          <input type="time" value="${entry.endTime}" onchange="updatePatternEntry('${day}', ${entry.id}, 'endTime', this.value)" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
+                        <div class="grid grid-cols-2 gap-3">
+                          <input type="time" value="${entry.startTime}" onchange="updatePatternEntry('${day}', ${entry.id}, 'startTime', this.value)" class="text-[11px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
+                          <input type="time" value="${entry.endTime}" onchange="updatePatternEntry('${day}', ${entry.id}, 'endTime', this.value)" class="text-[11px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
                         </div>
-                        <input type="text" placeholder="内容" value="${entry.content}" oninput="updatePatternEntry('${day}', ${entry.id}, 'content', this.value)" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none italic text-uber-accent">
-                      </div>`).join('')}
+                        <div class="flex items-center gap-2"><span class="px-2 py-0.5 text-[8px] font-black border ${roleStyles.badge}">${entry.course ? getScheduleRole(entry.course) : '未分類'}</span>${entry.course ? `<span class="text-[9px] opacity-60">${entry.course}</span>` : ''}</div>
+                        <input type="text" placeholder="内容" value="${entry.content}" oninput="updatePatternEntry('${day}', ${entry.id}, 'content', this.value)" class="text-[11px] font-black bg-transparent border-b border-uber/20 outline-none italic text-uber-accent">
+                      </div>`; }).join('')}
                     </div>
                   </div>`;
                 }).join('')}
