@@ -951,8 +951,72 @@
       return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><div class="mb-16 border-l-[10px] border-uber-accent pl-8 text-uber-accent uppercase italic font-black"><h3 class="text-4xl font-black tracking-tighter mb-4 uppercase">職員マスタ</h3><div class="text-[12px] opacity-40">${state.activeOffice} — ${currentStaff.length}名</div></div><div class="grid grid-cols-1 md:grid-cols-3 gap-12 max-w-6xl">${groups.map(role => `<div class="flex flex-col gap-0 border border-uber bg-uber-secondary text-uber-accent"><div class="flex items-center justify-between p-5 bg-uber-accent text-white font-black uppercase italic"><h4 class="text-[11px] tracking-[0.3em]">${role}</h4><span class="text-[11px] font-black text-uber-accent bg-white px-3 py-1 mono">${currentStaff.filter(s=>s.role===role).length}</span></div><div class="flex flex-col">${currentStaff.filter(s=>s.role===role).map(s => `<div class="p-5 border-b border-uber font-black text-uber-accent hover:bg-uber-accent hover:text-white transition-all flex items-center justify-between group italic uppercase">${s.name}<i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></div>`).join('')}</div></div>`).join('')}${noRole.length ? `<div class="flex flex-col gap-0 border border-uber bg-uber-secondary text-uber-accent"><div class="flex items-center justify-between p-5 bg-uber-accent text-white font-black uppercase italic"><h4 class="text-[11px] tracking-[0.3em]">${groups.length ? '未分類' : '全職員'}</h4><span class="text-[11px] font-black text-uber-accent bg-white px-3 py-1 mono">${noRole.length}</span></div><div class="flex flex-col">${noRole.map(s => `<div class="p-5 border-b border-uber font-black text-uber-accent hover:bg-uber-accent hover:text-white transition-all flex items-center justify-between group italic uppercase">${s.name}<i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></div>`).join('')}</div></div>` : ''}${currentStaff.length === 0 ? '<div class="col-span-3 p-8 border border-uber text-center opacity-40">この事業所には職員がいません</div>' : ''}</div></div>`;
     }
     function renderPatientMaster() {
-      const currentPatients = state.patientMaster.filter(p => p.office === state.activeOffice).sort((a,b) => (a.name||'').localeCompare(b.name||'', 'ja'));
-      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><div class="flex flex-wrap items-end justify-between gap-6 mb-12"><div><h3 class="text-4xl mb-4 tracking-tighter uppercase italic font-black">利用者マスタ</h3><div class="text-[12px] opacity-40">${state.activeOffice} — ${currentPatients.length}名</div></div><button onclick="expandPatientPatternsToSchedules()" class="flex items-center gap-2 px-6 py-3 border border-uber bg-white hover:bg-uber-accent hover:text-white transition-all text-[11px] font-black uppercase"><i data-lucide="rows-3" class="w-4 h-4"></i>週間パターンを予定へ展開</button></div><div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-0 border-t border-l border-uber">${currentPatients.map(p => `<button onclick="openPatientModal(${JSON.stringify(p).replace(/"/g, '&quot;')})" class="p-5 border-r border-b border-uber flex items-center hover:bg-uber-accent hover:text-white transition-all text-uber-accent w-full text-left group"><span class="text-[13px] italic uppercase font-black flex-1">${p.name || '<span class="opacity-40 not-italic">名前なし</span>'}</span><i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></button>`).join('')}${currentPatients.length === 0 ? '<div class="p-8 border-r border-b border-uber opacity-40 col-span-4 text-center">この事業所には利用者がいません</div>' : ''}</div></div>`;
+      const allPatients = state.patientMaster
+        .filter(p => p.office === state.activeOffice && p.name)
+        .sort((a, b) => {
+          const ra = parseInt(a.room || '9999', 10);
+          const rb = parseInt(b.room || '9999', 10);
+          return ra !== rb ? ra - rb : (a.name || '').localeCompare(b.name || '', 'ja');
+        });
+
+      const rows = allPatients.map(p => {
+        const settled = hasWeeklyPattern(p);
+        const course   = getPatientPrimaryCourse(p);
+        const patternLabel = settled ? '✓ 設定済' : '⚠ 未設定';
+        const patternData  = settled ? 'set' : 'unset';
+        const rowBg        = settled ? 'background:white;' : 'background:#fffbeb;';
+        const badgeStyle   = settled
+          ? 'background:#dcfce7;color:#16a34a;padding:2px 8px;font-size:9px;font-weight:900;white-space:nowrap;'
+          : 'background:#fef9c3;color:#a16207;padding:2px 8px;font-size:9px;font-weight:900;white-space:nowrap;';
+        const hoverBg      = settled ? 'white' : '#fffbeb';
+        const patientJson  = JSON.stringify(p).replace(/"/g, '&quot;');
+        return `<div class="master-row" data-name="${(p.name||'').replace(/"/g,'&quot;')}" data-room="${p.room||''}" data-pattern="${patternData}"
+          style="display:grid;grid-template-columns:1fr 52px 96px 72px;align-items:center;padding:0 12px;min-height:44px;border-bottom:1px solid #E8E8E8;cursor:pointer;${rowBg}"
+          onclick="openPatientModal(${patientJson})"
+          onmouseover="this.style.background='#F8F8F8'"
+          onmouseout="this.style.background='${hoverBg}'">
+          <span style="font-size:13px;font-weight:900;font-style:italic;text-transform:uppercase;">${p.name}</span>
+          <span style="font-size:11px;font-family:'DM Mono',monospace;font-weight:700;">${p.room || '—'}</span>
+          <span style="${badgeStyle}">${patternLabel}</span>
+          <span style="font-size:10px;opacity:0.55;">${course}</span>
+        </div>`;
+      }).join('');
+
+      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic">
+        <button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button>
+        <div class="flex flex-wrap items-end justify-between gap-6 mb-12">
+          <div>
+            <h3 class="text-4xl mb-4 tracking-tighter uppercase italic font-black">利用者マスタ</h3>
+            <div class="text-[12px] opacity-40">${state.activeOffice}</div>
+          </div>
+          <button onclick="expandPatientPatternsToSchedules()" class="flex items-center gap-2 px-6 py-3 border border-uber bg-white hover:bg-uber-accent hover:text-white transition-all text-[11px] font-black uppercase"><i data-lucide="rows-3" class="w-4 h-4"></i>週間パターンを予定へ展開</button>
+        </div>
+
+        <div class="flex gap-3 mb-4 max-w-4xl">
+          <div class="flex-1 flex items-center gap-2 border border-uber bg-uber-secondary px-4 py-2">
+            <i data-lucide="search" class="w-4 h-4 opacity-40 shrink-0"></i>
+            <input id="master-search" type="text" placeholder="名前・部屋番号で検索..."
+              oninput="filterMasterList()"
+              class="flex-1 bg-transparent outline-none text-[12px] font-black italic text-uber-accent placeholder:opacity-30 placeholder:not-italic">
+          </div>
+          <select id="master-filter" onchange="filterMasterList()"
+            class="border border-uber bg-white px-4 py-2 text-[11px] font-black uppercase italic text-uber-accent outline-none cursor-pointer">
+            <option value="all">全員</option>
+            <option value="unset">⚠ 未設定のみ</option>
+            <option value="set">✓ 設定済のみ</option>
+          </select>
+        </div>
+
+        <div class="max-w-4xl">
+          <div style="display:grid;grid-template-columns:1fr 52px 96px 72px;padding:6px 12px;background:#F8F8F8;border:1px solid #2C2C2C;font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:0.08em;opacity:0.6;">
+            <span>名前</span><span>部屋</span><span>週パターン</span><span>コース</span>
+          </div>
+          <div style="border:1px solid #E8E8E8;border-top:none;">
+            ${allPatients.length ? rows : '<div style="padding:32px;text-align:center;opacity:0.4;font-size:13px;">この事業所には利用者がいません</div>'}
+          </div>
+          <div id="master-count" style="padding:6px 12px;font-size:9px;opacity:0.4;text-align:right;border:1px solid #E8E8E8;border-top:none;">${allPatients.length} / ${allPatients.length}名 表示中</div>
+        </div>
+      </div>`;
     }
 
     function renderPatientModal() {
