@@ -120,6 +120,7 @@
       viewingPatientPatterns: null,
       staffPicker: { isOpen: false, targetCourse: null, searchQuery: '' },
       patientModal: { isOpen: false, formData: { patterns: {} } },
+      staffKanaModal: { isOpen: false, formData: {} },
       calendarDrag: null
     };
 
@@ -247,15 +248,26 @@
           room: patient.room || '', 
           floor: patient.floor || '1',
           office: patient.office || state.activeOffice,
+          family_name_kana: patient.family_name_kana || '',
+          first_name_kana:  patient.first_name_kana  || '',
+          user_id: patient.user_id || '',
+          center_cd: patient.center_cd || '',
           patterns: normalizePatientPatterns(patient.patterns)
-        } 
+        }
       };
       renderApp();
     }
     function closePatientModal() { state.patientModal.isOpen = false; renderApp(); }
     async function savePatientMaster() {
       const d = state.patientModal.formData;
-      const payload = { ...d, patterns: normalizePatientPatterns(d.patterns) };
+      const orig = state.patientMaster.find(p => p._docId === d._docId);
+      const kanaChanged = orig && (orig.family_name_kana !== d.family_name_kana || orig.first_name_kana !== d.first_name_kana);
+      const payload = {
+        ...d,
+        patterns: normalizePatientPatterns(d.patterns),
+        full_name_kana: `${d.family_name_kana} ${d.first_name_kana}`.trim(),
+        ...(kanaChanged ? { kana_modified: true } : {})
+      };
       const idx = state.patientMaster.findIndex(p =>
         p._docId === payload._docId ||
         (p.office === payload.office && (p.id === payload.id || (payload.room && p.room === payload.room)))
@@ -295,6 +307,70 @@
       updateCourseAssignee(state.staffPicker.targetCourse, staffName);
       closeStaffPicker();
     }
+    function openStaffKanaModal(staff) {
+      state.staffKanaModal = {
+        isOpen: true,
+        formData: {
+          _docId:          staff._docId || `${staff.center_cd}_${staff.user_id}`,
+          name:            staff.name || staff.full_name || '',
+          family_name_kana: staff.family_name_kana || '',
+          first_name_kana:  staff.first_name_kana  || '',
+          user_id:         staff.user_id  || '',
+          center_cd:       staff.center_cd || ''
+        }
+      };
+      renderApp();
+    }
+    function closeStaffKanaModal() { state.staffKanaModal.isOpen = false; renderApp(); }
+    async function saveStaffKana() {
+      const d = state.staffKanaModal.formData;
+      const updates = {
+        family_name_kana: d.family_name_kana,
+        first_name_kana:  d.first_name_kana,
+        full_name_kana:   `${d.family_name_kana} ${d.first_name_kana}`.trim(),
+        kana_modified:    true
+      };
+      const idx = state.staffMaster.findIndex(s => s._docId === d._docId);
+      if (idx !== -1) state.staffMaster[idx] = { ...state.staffMaster[idx], ...updates };
+      closeStaffKanaModal();
+      showToast('振り仮名を保存しました');
+      if (window.__firebaseSaveStaff) window.__firebaseSaveStaff({ _docId: d._docId, ...updates });
+    }
+    function renderStaffKanaModal() {
+      if (!state.staffKanaModal.isOpen) return '';
+      const d = state.staffKanaModal.formData;
+      return `<div class="fixed inset-0 bg-black/60 z-[4000] flex items-center justify-center p-6 text-uber-accent font-black uppercase italic" onclick="closeStaffKanaModal()">
+        <div class="bg-white border-[3px] border-uber w-full max-w-sm shadow-2xl overflow-hidden" onclick="event.stopPropagation()">
+          <div class="bg-uber-accent p-5 text-white flex justify-between items-center">
+            <span class="text-[12px] tracking-widest uppercase italic font-black">振り仮名編集</span>
+            <button onclick="closeStaffKanaModal()"><i data-lucide="x" class="w-5 h-5"></i></button>
+          </div>
+          <div class="p-8 flex flex-col gap-6">
+            <div class="text-[20px] font-black tracking-tight">${d.name}</div>
+            <div class="text-[10px] opacity-40 border-l-4 border-uber-accent pl-3 leading-5">職員名は変更できません。振り仮名のみ編集できます。<br>保存後、writeback_kana.py を実行することでDBに反映されます。</div>
+            <div class="flex flex-col gap-2">
+              <label class="text-[9px] opacity-40">振り仮名（姓）</label>
+              <input type="text" value="${d.family_name_kana}"
+                oninput="state.staffKanaModal.formData.family_name_kana=this.value"
+                placeholder="カタカナ"
+                class="border-b-2 border-uber p-2 font-black text-lg outline-none italic text-uber-accent bg-transparent">
+            </div>
+            <div class="flex flex-col gap-2">
+              <label class="text-[9px] opacity-40">振り仮名（名）</label>
+              <input type="text" value="${d.first_name_kana}"
+                oninput="state.staffKanaModal.formData.first_name_kana=this.value"
+                placeholder="カタカナ"
+                class="border-b-2 border-uber p-2 font-black text-lg outline-none italic text-uber-accent bg-transparent">
+            </div>
+          </div>
+          <div class="p-6 bg-uber-secondary border-t border-uber flex justify-end gap-0">
+            <button onclick="closeStaffKanaModal()" class="px-8 py-4 bg-white border-r border-uber text-[11px] font-black uppercase hover:bg-uber-accent hover:text-white transition-all text-uber-accent">キャンセル</button>
+            <button onclick="saveStaffKana()" class="px-10 py-4 bg-uber-accent text-white text-[11px] font-black uppercase hover:bg-uber-hover transition-all">保存</button>
+          </div>
+        </div>
+      </div>`;
+    }
+
     function hasWeeklyPattern(patient) {
       if (!patient || !patient.patterns) return false;
       return state.daysOfWeek.some(day => {
@@ -734,7 +810,7 @@
       if (state.activeMenu === 'visit_schedule') mainContent = renderVisitSchedule();
       else if (state.activeMenu === 'schedule_setting') mainContent = renderCalendar();
       else mainContent = renderMaster();
-      app.innerHTML = `${renderSidebar()}<main class="flex-1 flex flex-col h-screen overflow-hidden bg-white">${renderHeader()}${mainContent}</main>${renderModal()}${renderConfirmModal()}${renderDuplicateModal()}${renderStaffPicker()}${renderPatientModal()}`;
+      app.innerHTML = `${renderSidebar()}<main class="flex-1 flex flex-col h-screen overflow-hidden bg-white">${renderHeader()}${mainContent}</main>${renderModal()}${renderConfirmModal()}${renderDuplicateModal()}${renderStaffPicker()}${renderPatientModal()}${renderStaffKanaModal()}`;
       lucide.createIcons();
       updateTimeMeter();
     }
@@ -952,11 +1028,17 @@
         const roleBadge = s.role
           ? `<span style="background:#F8F8F8;border:1px solid #E8E8E8;padding:2px 8px;font-size:9px;font-weight:900;">${s.role}</span>`
           : `<span style="opacity:0.3;font-size:12px;">—</span>`;
+        const kana = s.full_name_kana || `${s.family_name_kana||''} ${s.first_name_kana||''}`.trim();
+        const staffJson = JSON.stringify(s).replace(/"/g, '&quot;');
         return `<div class="master-row" data-name="${(s.name||'').replace(/"/g,'&quot;')}" data-room="" data-pattern=""
-          style="display:grid;grid-template-columns:1fr 120px;align-items:center;padding:0 12px;min-height:44px;border-bottom:1px solid #E8E8E8;"
+          style="display:grid;grid-template-columns:1fr 120px;align-items:center;padding:0 12px;min-height:48px;border-bottom:1px solid #E8E8E8;cursor:pointer;"
+          onclick="openStaffKanaModal(${staffJson})"
           onmouseover="this.style.background='#F8F8F8'"
           onmouseout="this.style.background='white'">
-          <span style="font-size:13px;font-weight:900;font-style:italic;text-transform:uppercase;">${s.name}</span>
+          <div>
+            <div style="font-size:13px;font-weight:900;font-style:italic;text-transform:uppercase;">${s.name}</div>
+            ${kana ? `<div style="font-size:10px;opacity:0.45;font-style:italic;">${kana}</div>` : `<div style="font-size:10px;opacity:0.3;font-style:italic;">振り仮名未登録 — クリックして編集</div>`}
+          </div>
           ${roleBadge}
         </div>`;
       }).join('');
@@ -1074,10 +1156,14 @@
                 </div>
                 <div class="grid grid-cols-1 gap-5">
                   <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">氏名</label><input type="text" value="${d.name}" oninput="state.patientModal.formData.name=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none focus:bg-white italic text-uber-accent bg-transparent"></div>
+                  <div class="grid grid-cols-2 gap-3">
+                    <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">振り仮名（姓）</label><input type="text" value="${d.family_name_kana||''}" oninput="state.patientModal.formData.family_name_kana=this.value" placeholder="カタカナ" class="border-b-2 border-uber p-2 font-black text-sm outline-none focus:bg-white italic text-uber-accent bg-transparent"></div>
+                    <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">振り仮名（名）</label><input type="text" value="${d.first_name_kana||''}" oninput="state.patientModal.formData.first_name_kana=this.value" placeholder="カタカナ" class="border-b-2 border-uber p-2 font-black text-sm outline-none focus:bg-white italic text-uber-accent bg-transparent"></div>
+                  </div>
                   <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">居室</label><input type="text" value="${d.room}" oninput="state.patientModal.formData.room=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none focus:bg-white italic text-uber-accent bg-transparent"></div>
                   <div class="flex flex-col gap-2"><label class="text-[9px] opacity-40">階数</label><select onchange="state.patientModal.formData.floor=this.value" class="border-b-2 border-uber p-2 font-black text-lg outline-none appearance-none bg-transparent italic text-uber-accent">${[1,2,3,4].map(f => `<option value="${f}" ${d.floor==f?'selected':''}>${f}階</option>`).join('')}</select></div>
                 </div>
-                <div class="border-t border-uber pt-4 text-[10px] opacity-50 leading-5">曜日ごとに複数パターンを登録できます。コースと時間帯が見分けやすいよう、早朝・日中・夜間で色分けしています。</div>
+                <div class="border-t border-uber pt-4 text-[10px] opacity-50 leading-5">振り仮名の変更はFirestoreに保存されます。DBへの書き戻しは writeback_kana.py を実行してください。</div>
               </div>
 
               <div class="flex flex-col gap-4">
@@ -1309,6 +1395,18 @@
       }
     }
     window.__firebaseSavePatient = firebaseSavePatient;
+
+    async function firebaseSaveStaff(staffData) {
+      try {
+        const { _docId, ...payload } = staffData;
+        await setDoc(doc(db, 'staffs', String(_docId)), payload, { merge: true });
+        console.log('Staff kana saved to Firestore');
+      } catch (e) {
+        console.error('Error saving staff kana:', e);
+        window.showToast('振り仮名の保存に失敗しました');
+      }
+    }
+    window.__firebaseSaveStaff = firebaseSaveStaff;
 
     // グローバルに差し替え
     window.__firebaseSyncData = firebaseSyncData;
