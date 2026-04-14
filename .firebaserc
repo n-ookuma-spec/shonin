@@ -2,5 +2,21 @@
   "projects": {
     "staging": "shonin-staging-89db3",
     "production": "shonin-prod"
+  },
+  "targets": {
+    "shonin-staging-89db3": {
+      "hosting": {
+        "app": [
+          "shonin-staging-89db3"
+        ]
+      }
+    },
+    "shonin-prod": {
+      "hosting": {
+        "app": [
+          "shonin-prod"
+        ]
+      }
+    }
   }
 }

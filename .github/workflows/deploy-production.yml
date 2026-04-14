@@ -9,7 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Authenticate to Google Cloud (Service Account)
+        run: |
+          echo '${{ secrets.GCP_SA_KEY_PRODUCTION }}' > "${{ runner.temp }}/gcp-sa.json"
+          echo "GOOGLE_APPLICATION_CREDENTIALS=${{ runner.temp }}/gcp-sa.json" >> "$GITHUB_ENV"
       - name: Install Firebase CLI
         run: npm install -g firebase-tools
       - name: Deploy to Firebase Production
-        run: firebase deploy --only hosting,firestore --project production --token "${{ secrets.FIREBASE_TOKEN }}"
+        run: firebase deploy --only hosting:app,firestore --project production
