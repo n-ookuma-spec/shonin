@@ -45,13 +45,16 @@ except ImportError:
 # ログ設定
 # ─────────────────────────────────────────────
 LOG_FILE = Path(__file__).parent / "sync.log"
+_handlers = [logging.StreamHandler(sys.stdout)]
+try:
+    _handlers.insert(0, logging.FileHandler(LOG_FILE, encoding="utf-8"))
+except OSError as e:
+    print(f"[WARN] sync.log を開けないため標準出力のみで継続します: {e}", file=sys.stderr)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ],
+    handlers=_handlers,
 )
 logger = logging.getLogger(__name__)
 
@@ -89,6 +92,7 @@ SELECT
     c.center_cd,
     c.name       AS office_name,
     u.USER_ID,
+    {patient_member_no_select},
     u.FAMILY_NAME,
     u.FIRST_NAME,
     u.FAMILY_NAME_KANA,
@@ -110,6 +114,7 @@ SELECT
     c.center_cd,
     c.name         AS office_name,
     e.USER_ID,
+    {staff_member_no_select},
     u.FAMILY_NAME,
     u.FIRST_NAME,
     u.FAMILY_NAME_KANA,
@@ -174,6 +179,151 @@ def get_db_connection():
     return pyodbc.connect(conn_str)
 
 
+def get_table_columns(cursor, table_name: str) -> set[str]:
+    """指定テーブルのカラム名セットを返す。"""
+    cursor.execute(
+        """
+        SELECT COLUMN_NAME
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_NAME = ?
+        """,
+        (table_name,),
+    )
+    return {str(row.COLUMN_NAME).upper() for row in cursor.fetchall()}
+
+
+def build_optional_column_select(alias: str, output_name: str, available_columns: set[str], candidates: list[str]) -> str:
+    """存在する候補カラムから SELECT 句を組み立てる。"""
+    existing = [f"CAST({alias}.{name} AS NVARCHAR(255))" for name in candidates if name.upper() in available_columns]
+    if not existing:
+        return f"CAST(NULL AS NVARCHAR(255)) AS {output_name}"
+    if len(existing) == 1:
+        return f"{existing[0]} AS {output_name}"
+    return f"COALESCE({', '.join(existing)}) AS {output_name}"
+
+
+def normalize_member_no(value) -> str:
+    """会員番号の揺れを吸収して文字列化する。"""
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def normalize_office_name(value) -> str:
+    """事業所名の先頭装飾を除去して比較可能な形にする。"""
+    s = str(value or "").strip()
+    while s[:1] in {"※", "＊", "*"}:
+        s = s[1:].lstrip()
+    return s
+
+
+def build_sync_key(center_cd: str, user_id: str) -> str:
+    """システム間で不変な同期キー。"""
+    return f"{center_cd}_{user_id}"
+
+
+def load_existing_docs(col) -> tuple[dict[str, dict], dict[tuple[str, str], str], dict[tuple[str, str], str]]:
+    """
+    既存ドキュメントを読み込み、doc_id と user_id/member_no インデックスを返す。
+    戻り値:
+      - docs_by_id: doc_id -> dict
+      - docs_by_user_key: (center_cd, user_id) -> doc_id
+      - docs_by_member_key: (center_cd, member_no) -> doc_id
+    """
+    docs_by_id = {}
+    docs_by_user_key = {}
+    docs_by_member_key = {}
+    docs_by_office_name_key = {}
+    docs_by_sync_key = {}
+
+    for snap in col.stream():
+        data = snap.to_dict() or {}
+        docs_by_id[snap.id] = data
+
+        center_cd = str(data.get("center_cd") or "").strip()
+        user_id = str(data.get("user_id") or "").strip()
+        member_no = normalize_member_no(data.get("member_no"))
+        office = normalize_office_name(data.get("office"))
+        name = str(data.get("name") or "").strip()
+        sync_key = str(data.get("sync_key") or "").strip()
+
+        if center_cd and user_id:
+            docs_by_user_key[(center_cd, user_id)] = snap.id
+            docs_by_sync_key[build_sync_key(center_cd, user_id)] = snap.id
+        if center_cd and member_no:
+            docs_by_member_key[(center_cd, member_no)] = snap.id
+        if office and name:
+            docs_by_office_name_key[(office, name)] = snap.id
+        if sync_key:
+            docs_by_sync_key[sync_key] = snap.id
+
+    return docs_by_id, docs_by_user_key, docs_by_member_key, docs_by_office_name_key, docs_by_sync_key
+
+
+def pick_patient_doc_id(center_cd: str, user_id: str, member_no: str,
+                        docs_by_user_key: dict[tuple[str, str], str],
+                        docs_by_member_key: dict[tuple[str, str], str],
+                        office_name: str,
+                        full_name: str,
+                        docs_by_office_name_key: dict[tuple[str, str], str],
+                        docs_by_sync_key: dict[str, str]) -> str:
+    """利用者の安定キーから Firestore doc_id を選ぶ。"""
+    sync_key = build_sync_key(center_cd, user_id)
+    existing_sync_doc = docs_by_sync_key.get(sync_key)
+    if existing_sync_doc:
+        return existing_sync_doc
+
+    existing_user_doc = docs_by_user_key.get((center_cd, user_id))
+    if existing_user_doc:
+        return existing_user_doc
+
+    if member_no:
+        existing_member_doc = docs_by_member_key.get((center_cd, member_no))
+        if existing_member_doc:
+            return existing_member_doc
+
+    existing_legacy_doc = docs_by_office_name_key.get((normalize_office_name(office_name), full_name))
+    if existing_legacy_doc:
+        return existing_legacy_doc
+    return sync_key
+
+
+def merge_patient_preserved_fields(existing_doc: dict | None, synced_doc: dict) -> dict:
+    """承認アプリ側で管理している項目は同期時に引き継ぐ。"""
+    if not existing_doc:
+        return synced_doc
+
+    preserved_fields = (
+        "room",
+        "floor",
+        "patterns",
+    )
+    merged = dict(synced_doc)
+    for field in preserved_fields:
+        if field in existing_doc and existing_doc[field] not in (None, ""):
+            merged[field] = existing_doc[field]
+
+    # 承認アプリで編集中(kana_modified=true)の間だけ、ふりがなを保護する。
+    # 通常は SQL Server を正として同期結果を反映する。
+    if existing_doc.get("kana_modified"):
+        merged["kana_modified"] = True
+        for field in ("family_name_kana", "first_name_kana", "full_name_kana"):
+            if field in existing_doc and existing_doc[field] not in (None, ""):
+                merged[field] = existing_doc[field]
+    return merged
+
+
+def docs_equal_ignoring_updated_at(existing_doc: dict | None, new_doc: dict) -> bool:
+    """updatedAt を除いて同値なら True。"""
+    if not existing_doc:
+        return False
+
+    def strip_updated_at(doc: dict) -> dict:
+        return {k: v for k, v in doc.items() if k != "updatedAt"}
+
+    return strip_updated_at(existing_doc) == strip_updated_at(new_doc)
+
+
 # ─────────────────────────────────────────────
 # Firebase 初期化
 # ─────────────────────────────────────────────
@@ -209,34 +359,56 @@ def sync_offices(cursor, db: firestore.Client, office_filter: str, dry_run: bool
     now = datetime.now(timezone.utc)
     synced_ids = set()
     col = db.collection("offices")
+    existing_docs = {snap.id: (snap.to_dict() or {}) for snap in col.stream()}
+    write_count = 0
+    skip_count = 0
 
     for i in range(0, len(rows), BATCH_SIZE):
         batch = db.batch()
         chunk = rows[i : i + BATCH_SIZE]
+        batch_writes = 0
         for row in chunk:
             center_cd   = str(row.center_cd).strip()
-            office_name = str(row.office_name).strip() if row.office_name else ""
+            office_name = normalize_office_name(row.office_name)
             doc_id = center_cd
 
             doc = {
                 "center_cd":   center_cd,
                 "name":        office_name,
-                "updatedAt":   now,
             }
             synced_ids.add(doc_id)
+            if docs_equal_ignoring_updated_at(existing_docs.get(doc_id), doc):
+                skip_count += 1
+                continue
+
+            doc["updatedAt"] = now
             if not dry_run:
                 batch.set(col.document(doc_id), doc)
+                batch_writes += 1
+            write_count += 1
 
-        if not dry_run:
+        if not dry_run and batch_writes > 0:
             batch.commit()
         logger.info(f"  offices バッチ書き込み: {i + 1}〜{i + len(chunk)} 件")
+
+    logger.info(f"  offices 変更あり: {write_count} 件 / 変更なし: {skip_count} 件")
 
     return synced_ids
 
 
 def sync_patients(cursor, db: firestore.Client, office_filter: str, dry_run: bool) -> set:
     """利用者マスタを patients コレクションへ同期。同期済みのドキュメントID セットを返す。"""
-    query = QUERY_PATIENTS.format(office_filter=office_filter)
+    user_columns = get_table_columns(cursor, "HLC_MST_USR")
+    patient_member_no_select = build_optional_column_select(
+        "u",
+        "MEMBER_NO",
+        user_columns,
+        ["MEMBER_NO", "KAIIN_NO", "MEMBER_NUMBER"],
+    )
+    query = QUERY_PATIENTS.format(
+        office_filter=office_filter,
+        patient_member_no_select=patient_member_no_select,
+    )
     cursor.execute(query)
     rows = cursor.fetchall()
     logger.info(f"利用者マスタ取得: {len(rows)} 件")
@@ -244,49 +416,91 @@ def sync_patients(cursor, db: firestore.Client, office_filter: str, dry_run: boo
     now = datetime.now(timezone.utc)
     synced_ids = set()
     col = db.collection("patients")
+    docs_by_id, docs_by_user_key, docs_by_member_key, docs_by_office_name_key, docs_by_sync_key = load_existing_docs(col)
+    write_count = 0
+    skip_count = 0
 
     for i in range(0, len(rows), BATCH_SIZE):
         batch = db.batch()
         chunk = rows[i : i + BATCH_SIZE]
+        batch_writes = 0
         for row in chunk:
             center_cd        = str(row.center_cd).strip()
             user_id          = str(row.USER_ID).strip()
+            member_no        = normalize_member_no(getattr(row, "MEMBER_NO", None))
             family_name      = str(row.FAMILY_NAME or "").strip()
             first_name       = str(row.FIRST_NAME or "").strip()
             family_name_kana = str(row.FAMILY_NAME_KANA or "").strip()
             first_name_kana  = str(row.FIRST_NAME_KANA or "").strip()
-            office_name      = str(row.office_name or "").strip()
+            office_name_raw  = str(row.office_name or "").strip()
+            office_name      = normalize_office_name(office_name_raw)
+            full_name        = f"{family_name} {first_name}".strip()
+            sync_key         = build_sync_key(center_cd, user_id)
 
-            doc_id = f"{center_cd}_{user_id}"
+            doc_id = pick_patient_doc_id(
+                center_cd, user_id, member_no,
+                docs_by_user_key, docs_by_member_key,
+                office_name, full_name, docs_by_office_name_key, docs_by_sync_key
+            )
 
             doc = {
                 "center_cd":        center_cd,
                 "user_id":          user_id,
+                "member_no":        member_no,
+                "sync_key":         sync_key,
+                "master_key":       sync_key,
                 "family_name":      family_name,
                 "first_name":       first_name,
                 "family_name_kana": family_name_kana,
                 "first_name_kana":  first_name_kana,
-                "full_name":        f"{family_name} {first_name}".strip(),
+                "full_name":        full_name,
                 "full_name_kana":   f"{family_name_kana} {first_name_kana}".strip(),
                 "office_name":      office_name,
-                "name":             f"{family_name} {first_name}".strip(),
+                "name":             full_name,
                 "office":           office_name,
-                "updatedAt":        now,
             }
+            doc = merge_patient_preserved_fields(docs_by_id.get(doc_id), doc)
             synced_ids.add(doc_id)
-            if not dry_run:
-                batch.set(col.document(doc_id), doc)
 
-        if not dry_run:
+            if docs_equal_ignoring_updated_at(docs_by_id.get(doc_id), doc):
+                skip_count += 1
+            else:
+                doc["updatedAt"] = now
+                if not dry_run:
+                    batch.set(col.document(doc_id), doc)
+                    batch_writes += 1
+                write_count += 1
+
+            docs_by_id[doc_id] = doc
+            docs_by_user_key[(center_cd, user_id)] = doc_id
+            docs_by_sync_key[sync_key] = doc_id
+            if member_no:
+                docs_by_member_key[(center_cd, member_no)] = doc_id
+            if office_name and full_name:
+                docs_by_office_name_key[(office_name, full_name)] = doc_id
+
+        if not dry_run and batch_writes > 0:
             batch.commit()
         logger.info(f"  patients バッチ書き込み: {i + 1}〜{i + len(chunk)} 件")
+
+    logger.info(f"  patients 変更あり: {write_count} 件 / 変更なし: {skip_count} 件")
 
     return synced_ids
 
 
 def sync_staff(cursor, db: firestore.Client, office_filter: str, dry_run: bool) -> set:
     """職員マスタを staffs コレクションへ同期。同期済みのドキュメントID セットを返す。"""
-    query = QUERY_STAFF.format(office_filter=office_filter)
+    user_columns = get_table_columns(cursor, "HLC_MST_USR")
+    staff_member_no_select = build_optional_column_select(
+        "u",
+        "MEMBER_NO",
+        user_columns,
+        ["MEMBER_NO", "KAIIN_NO", "MEMBER_NUMBER"],
+    )
+    query = QUERY_STAFF.format(
+        office_filter=office_filter,
+        staff_member_no_select=staff_member_no_select,
+    )
     cursor.execute(query)
     rows = cursor.fetchall()
     logger.info(f"職員マスタ取得: {len(rows)} 件")
@@ -294,18 +508,24 @@ def sync_staff(cursor, db: firestore.Client, office_filter: str, dry_run: bool) 
     now = datetime.now(timezone.utc)
     synced_ids = set()
     col = db.collection("staffs")
+    existing_docs = {snap.id: (snap.to_dict() or {}) for snap in col.stream()}
+    write_count = 0
+    skip_count = 0
 
     for i in range(0, len(rows), BATCH_SIZE):
         batch = db.batch()
         chunk = rows[i : i + BATCH_SIZE]
+        batch_writes = 0
         for row in chunk:
             center_cd        = str(row.center_cd).strip()
             user_id          = str(row.USER_ID).strip()
+            member_no        = normalize_member_no(getattr(row, "MEMBER_NO", None))
+            sync_key         = build_sync_key(center_cd, user_id)
             family_name      = str(row.FAMILY_NAME or "").strip()
             first_name       = str(row.FIRST_NAME or "").strip()
             family_name_kana = str(row.FAMILY_NAME_KANA or "").strip()
             first_name_kana  = str(row.FIRST_NAME_KANA or "").strip()
-            office_name      = str(row.office_name or "").strip()
+            office_name      = normalize_office_name(row.office_name)
             license_name     = str(row.LICENSE_NAME or "").strip()
 
             doc_id = f"{center_cd}_{user_id}"
@@ -313,6 +533,9 @@ def sync_staff(cursor, db: firestore.Client, office_filter: str, dry_run: bool) 
             doc = {
                 "center_cd":        center_cd,
                 "user_id":          user_id,
+                "member_no":        member_no,
+                "sync_key":         sync_key,
+                "master_key":       sync_key,
                 "family_name":      family_name,
                 "first_name":       first_name,
                 "family_name_kana": family_name_kana,
@@ -322,15 +545,23 @@ def sync_staff(cursor, db: firestore.Client, office_filter: str, dry_run: bool) 
                 "office":           office_name,
                 "office_name":      office_name,
                 "role":             license_name,
-                "updatedAt":        now,
             }
             synced_ids.add(doc_id)
+            if docs_equal_ignoring_updated_at(existing_docs.get(doc_id), doc):
+                skip_count += 1
+                continue
+
+            doc["updatedAt"] = now
             if not dry_run:
                 batch.set(col.document(doc_id), doc)
+                batch_writes += 1
+            write_count += 1
 
-        if not dry_run:
+        if not dry_run and batch_writes > 0:
             batch.commit()
         logger.info(f"  staffs バッチ書き込み: {i + 1}〜{i + len(chunk)} 件")
+
+    logger.info(f"  staffs 変更あり: {write_count} 件 / 変更なし: {skip_count} 件")
 
     return synced_ids
 
@@ -428,3 +659,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
