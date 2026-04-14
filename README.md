@@ -93,3 +93,25 @@
   * 当該建物に居住していても、包括型の届出を行っていない別ステーションが訪問した場合は、そのステーションは出来高制（０１）等で算定を行う。自システム内では「自ステーションが届出済みか」のフラグを最優先すること。
 * エラーハンドリング:
   * 日中・夜間のセット訪問が1日の中で完結していないデータ（例：日中のみ）が包括型対象者に記録された場合、エラーログを吐き出し、算定不可として処理すること。
+
+## Firebase Functions による schedule 書き戻し
+
+Firestore `schedules` から SQL Server `schedule` テーブルへリアルタイム書き戻しする Firebase Functions を `functions/` に追加している。
+
+前提:
+- Firestore の対象ドキュメントに `writeback_status: "pending"` が付与されること
+- Functions ランタイムに以下の環境変数を設定すること
+  - `DB_SERVER`
+  - `DB_NAME`
+  - `DB_USER`
+  - `DB_PASSWORD`
+  - `SCHEDULE_DEFAULT_CREATED_BY`
+  - `SCHEDULE_DEFAULT_UPDATED_BY`
+
+デプロイ例:
+```bash
+cd functions
+npm install
+cd ..
+firebase deploy --only functions
+```

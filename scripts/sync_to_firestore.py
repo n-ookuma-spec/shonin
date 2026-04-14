@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 SQL Server → Firestore 同期スクリプト
-対象: 事業所マスタ (offices) および 利用者マスタ (patients)
+対象: 事業所マスタ (offices) / 利用者マスタ (patients) / 職員マスタ (staffs) / 予定 (schedules)
 
 使用方法:
     python sync_to_firestore.py [--office A000010558] [--dry-run]
@@ -140,6 +140,50 @@ WHERE c.temp_flg = '0'
 ORDER BY c.center_cd, u.FAMILY_NAME
 """
 
+QUERY_SCHEDULES = """
+SELECT
+    s.serial_no,
+    s.center_cd,
+    s.schedule_date,
+    s.schedule_type,
+    s.start_time,
+    s.end_time,
+    s.user_id,
+    s.user_cd,
+    s.staff_user_id,
+    s.staff_user_cd,
+    s.staff_center_cd,
+    s.staff_qualification,
+    s.cost_type,
+    s.title,
+    s.multi_visitor,
+    s.service_code,
+    s.service_name,
+    s.addition_service,
+    s.kasan_service_name,
+    s.nh_hospice_no,
+    s.nh_card_id,
+    s.nh_card_type,
+    s.nh_main_course_serial_no,
+    s.nh_main_cancel_flg,
+    s.nh_sub_course_serial_no,
+    s.nh_sub_cancel_flg,
+    s.nh_visit_number,
+    s.nh_content_json,
+    s.nh_record_coop_flg,
+    s.nh_comment,
+    s.companion1_center_cd,
+    s.companion1_user_id,
+    s.companion1_qualificstion,
+    s.created_at,
+    s.created_by
+FROM schedule s
+WHERE s.deleted_at IS NULL
+  AND (s.cancel_flg IS NULL OR s.cancel_flg <> '1')
+  {schedule_filter}
+ORDER BY s.schedule_date, s.start_time, s.serial_no
+"""
+
 
 # ─────────────────────────────────────────────
 # SQL Server 接続
@@ -217,9 +261,77 @@ def normalize_office_name(value) -> str:
     return s
 
 
+def normalize_sql_value(value) -> str:
+    """SQLのchar/nchar列を扱いやすい文字列へ正規化する。"""
+    return str(value or "").strip()
+
+
 def build_sync_key(center_cd: str, user_id: str) -> str:
     """システム間で不変な同期キー。"""
     return f"{center_cd}_{user_id}"
+
+
+def build_schedule_doc_id(serial_no) -> str:
+    return f"sql_{str(serial_no).strip()}"
+
+
+def format_sql_date(value) -> str:
+    if not value:
+        return ""
+    return value.strftime("%Y-%m-%d")
+
+
+def weekday_ja_from_date(value) -> str:
+    if not value:
+        return ""
+    return ["月", "火", "水", "木", "金", "土", "日"][value.weekday()]
+
+
+QUALIFICATION_LABELS = {
+    "2": "看護",
+    "8": "PT",
+    "9": "栄養",
+    "10": "OT",
+    "11": "ST",
+    "13": "准看護",
+    "16": "保健師",
+    "18": "柔整",
+    "19": "マッサージ",
+    "22": "ケアマネ",
+    "23": "社会福祉",
+    "24": "介護",
+    "25": "福祉用具",
+    "26": "栄養士",
+    "28": "無資格",
+    "29": "実務者",
+    "30": "初任者",
+    "31": "ヘルパー1",
+    "32": "ヘルパー2",
+    "33": "認知症基礎",
+    "34": "認知症実践",
+    "37": "社会福祉主事",
+    "38": "調理師",
+    "39": "はり師",
+    "40": "きゅう師",
+    "41": "保育士",
+}
+
+
+def schedule_course_label(schedule_type, staff_qualification) -> str:
+    type_label = f"種別{str(schedule_type or '').strip()}" if schedule_type is not None else "種別"
+    qualification = QUALIFICATION_LABELS.get(str(staff_qualification or "").strip())
+    if qualification:
+        return f"{qualification}_{type_label}"
+    return type_label
+
+
+def resolve_schedule_center_cd(center_cd: str, staff_center_cd: str, office_names_by_center: dict[str, str]) -> str:
+    """予定の所属事業所を決める。訪問担当の所属(staff_center_cd)を優先する。"""
+    if staff_center_cd and staff_center_cd in office_names_by_center:
+        return staff_center_cd
+    if center_cd and center_cd in office_names_by_center:
+        return center_cd
+    return center_cd or staff_center_cd
 
 
 def load_existing_docs(col) -> tuple[dict[str, dict], dict[tuple[str, str], str], dict[tuple[str, str], str]]:
@@ -566,6 +678,118 @@ def sync_staff(cursor, db: firestore.Client, office_filter: str, dry_run: bool) 
     return synced_ids
 
 
+def sync_schedules(cursor, db: firestore.Client, schedule_filter: str, dry_run: bool, office_names_by_center: dict[str, str]) -> set:
+    """schedule テーブルを schedules コレクションへ同期。SQL由来は sql_<serial_no> をdoc_idに使う。"""
+    query = QUERY_SCHEDULES.format(schedule_filter=schedule_filter)
+    cursor.execute(query)
+    rows = cursor.fetchall()
+    logger.info(f"schedule取得: {len(rows)} 件")
+
+    now = datetime.now(timezone.utc)
+    synced_ids = set()
+    col = db.collection("schedules")
+    existing_docs = {}
+    for snap in col.stream():
+        if snap.id.startswith("sql_"):
+            existing_docs[snap.id] = snap.to_dict() or {}
+    patient_names_by_sync_key = {}
+    for snap in db.collection("patients").stream():
+        data = snap.to_dict() or {}
+        sync_key = normalize_sql_value(data.get("sync_key"))
+        if sync_key:
+            patient_names_by_sync_key[sync_key] = normalize_sql_value(data.get("name"))
+
+    write_count = 0
+    skip_count = 0
+
+    for i in range(0, len(rows), BATCH_SIZE):
+        batch = db.batch()
+        chunk = rows[i : i + BATCH_SIZE]
+        batch_writes = 0
+        for row in chunk:
+            serial_no = normalize_sql_value(row.serial_no)
+            center_cd = normalize_sql_value(row.center_cd)
+            staff_center_cd = normalize_sql_value(row.staff_center_cd)
+            effective_center_cd = resolve_schedule_center_cd(center_cd, staff_center_cd, office_names_by_center)
+            office_name = office_names_by_center.get(effective_center_cd, normalize_office_name(effective_center_cd))
+            schedule_date = format_sql_date(row.schedule_date)
+            start_time = normalize_sql_value(row.start_time)
+            end_time = normalize_sql_value(row.end_time)
+            schedule_type = normalize_sql_value(row.schedule_type)
+            doc_id = build_schedule_doc_id(serial_no)
+            patient_name = ""
+
+            user_id = normalize_sql_value(row.user_id)
+            if user_id:
+                patient_name = patient_names_by_sync_key.get(build_sync_key(center_cd or effective_center_cd, user_id), "")
+
+            doc = {
+                "id": int(serial_no) if serial_no.isdigit() else serial_no,
+                "source": "sql_schedule",
+                "serial_no": int(serial_no) if serial_no.isdigit() else serial_no,
+                "center_cd": center_cd,
+                "schedule_date": schedule_date,
+                "day": weekday_ja_from_date(row.schedule_date),
+                "schedule_type": schedule_type,
+                "course": schedule_course_label(schedule_type, row.staff_qualification),
+                "startTime": start_time,
+                "endTime": end_time,
+                "office": office_name,
+                "effective_center_cd": effective_center_cd,
+                "patient": patient_name,
+                "content": normalize_sql_value(row.title) or normalize_sql_value(row.nh_comment),
+                "room": "",
+                "isMultiple": normalize_sql_value(row.multi_visitor) in {"1", "true", "TRUE"},
+                "secondaryStaff": "",
+                "user_id": user_id,
+                "user_cd": normalize_sql_value(row.user_cd),
+                "staff_user_id": normalize_sql_value(row.staff_user_id),
+                "staff_user_cd": normalize_sql_value(row.staff_user_cd),
+                "staff_center_cd": staff_center_cd,
+                "staff_qualification": normalize_sql_value(row.staff_qualification),
+                "cost_type": normalize_sql_value(row.cost_type),
+                "title": normalize_sql_value(row.title),
+                "service_code": normalize_sql_value(row.service_code),
+                "service_name": normalize_sql_value(row.service_name),
+                "addition_service": normalize_sql_value(row.addition_service),
+                "kasan_service_name": normalize_sql_value(row.kasan_service_name),
+                "nh_hospice_no": row.nh_hospice_no,
+                "nh_card_id": normalize_sql_value(row.nh_card_id),
+                "nh_card_type": row.nh_card_type,
+                "nh_main_course_serial_no": row.nh_main_course_serial_no,
+                "nh_main_cancel_flg": normalize_sql_value(row.nh_main_cancel_flg),
+                "nh_sub_course_serial_no": row.nh_sub_course_serial_no,
+                "nh_sub_cancel_flg": normalize_sql_value(row.nh_sub_cancel_flg),
+                "nh_visit_number": row.nh_visit_number,
+                "nh_content_json": normalize_sql_value(row.nh_content_json),
+                "nh_record_coop_flg": row.nh_record_coop_flg,
+                "nh_comment": normalize_sql_value(row.nh_comment),
+                "companion1_center_cd": normalize_sql_value(row.companion1_center_cd),
+                "companion1_user_id": normalize_sql_value(row.companion1_user_id),
+                "companion1_qualificstion": normalize_sql_value(row.companion1_qualificstion),
+                "created_at": row.created_at,
+                "created_by": row.created_by,
+            }
+            synced_ids.add(doc_id)
+
+            if docs_equal_ignoring_updated_at(existing_docs.get(doc_id), doc):
+                skip_count += 1
+                continue
+
+            doc["updatedAt"] = now
+            if not dry_run:
+                batch.set(col.document(doc_id), doc)
+                batch_writes += 1
+            write_count += 1
+
+        if not dry_run and batch_writes > 0:
+            batch.commit()
+        logger.info(f"  schedules バッチ書き込み: {i + 1}〜{i + len(chunk)} 件")
+
+    logger.info(f"  schedules 変更あり: {write_count} 件 / 変更なし: {skip_count} 件")
+    return synced_ids
+
+
 def delete_stale(db: firestore.Client, collection: str, synced_ids: set, dry_run: bool):
     """Firestoreに存在するが今回の同期対象に含まれないドキュメントを削除する。"""
     col = db.collection(collection)
@@ -584,6 +808,28 @@ def delete_stale(db: firestore.Client, collection: str, synced_ids: set, dry_run
             if not dry_run:
                 batch.delete(col.document(doc.id))
             logger.info(f"  削除: {collection}/{doc.id}")
+        if not dry_run:
+            batch.commit()
+
+
+def delete_stale_sql_schedules(db: firestore.Client, synced_ids: set, dry_run: bool):
+    """SQL同期由来の schedules ドキュメントだけを削除対象にする。"""
+    col = db.collection("schedules")
+    docs = col.stream()
+    stale = [d for d in docs if d.id.startswith("sql_") and d.id not in synced_ids]
+
+    if not stale:
+        logger.info("schedules(sql): 削除対象なし")
+        return
+
+    logger.info(f"schedules(sql): 削除対象 {len(stale)} 件")
+    for i in range(0, len(stale), BATCH_SIZE):
+        batch = db.batch()
+        chunk = stale[i : i + BATCH_SIZE]
+        for doc in chunk:
+            if not dry_run:
+                batch.delete(col.document(doc.id))
+            logger.info(f"  削除: schedules/{doc.id}")
         if not dry_run:
             batch.commit()
 
@@ -609,9 +855,14 @@ def main():
     # SQL のフィルタ句
     if args.office:
         office_filter = f"AND c.center_cd = '{args.office}'"
+        schedule_filter = (
+            "AND (RTRIM(CAST(s.center_cd AS NVARCHAR(50))) = '{office}' "
+            "OR RTRIM(CAST(s.staff_center_cd AS NVARCHAR(50))) = '{office}')"
+        ).format(office=args.office)
         logger.info(f"対象事業所を絞り込み: {args.office}")
     else:
         office_filter = ""
+        schedule_filter = ""
         logger.info("対象事業所: 全事業所")
 
     start = datetime.now()
@@ -629,6 +880,10 @@ def main():
         # 事業所同期
         synced_offices = sync_offices(cursor, db, office_filter, args.dry_run)
         logger.info(f"事業所同期完了: {len(synced_offices)} 件")
+        office_names_by_center = {
+            snap.id: normalize_office_name((snap.to_dict() or {}).get("name"))
+            for snap in db.collection("offices").stream()
+        }
 
         # 利用者同期
         synced_patients = sync_patients(cursor, db, office_filter, args.dry_run)
@@ -638,11 +893,16 @@ def main():
         synced_staff = sync_staff(cursor, db, office_filter, args.dry_run)
         logger.info(f"職員同期完了: {len(synced_staff)} 件")
 
+        # 予定同期
+        synced_schedules = sync_schedules(cursor, db, schedule_filter, args.dry_run, office_names_by_center)
+        logger.info(f"予定同期完了: {len(synced_schedules)} 件")
+
         # 廃止レコードの削除 (全事業所同期時のみ実施)
         if not args.no_delete and not args.office:
             delete_stale(db, "offices",  synced_offices,  args.dry_run)
             delete_stale(db, "patients", synced_patients, args.dry_run)
             delete_stale(db, "staffs",   synced_staff,    args.dry_run)
+            delete_stale_sql_schedules(db, synced_schedules, args.dry_run)
         elif args.office:
             logger.info("特定事業所指定のため、廃止レコード削除をスキップ")
 

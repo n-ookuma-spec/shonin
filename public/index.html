@@ -113,6 +113,7 @@
       scheduleRows: [],
       daysOfWeek: ['月', '火', '水', '木', '金', '土', '日'],
       weekDates: [],
+      weekDateKeys: [],
       currentMonth: '',
       userInfo: { email: '', name: '読み込み中...' },
       selectedMaster: null,
@@ -483,6 +484,10 @@
       state.weekDates = Array.from({length: 7}, (_, i) => {
         const d = new Date(monday); d.setDate(monday.getDate() + i); return d.getDate();
       });
+      state.weekDateKeys = Array.from({length: 7}, (_, i) => {
+        const d = new Date(monday); d.setDate(monday.getDate() + i);
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+      });
       state.currentMonth = (now.getMonth() + 1) + '月';
       state.activeDay = state.daysOfWeek[(now.getDay() + 6) % 7];
     }
@@ -543,6 +548,17 @@
     }
     function getScheduleRole(course) {
       return (course || '').includes('介') ? '介護' : '看護';
+    }
+    function getDayDateKey(day) {
+      const idx = state.daysOfWeek.indexOf(day);
+      return idx === -1 ? '' : (state.weekDateKeys[idx] || '');
+    }
+    function scheduleMatchesDay(row, day) {
+      if ((row.schedule_date || '').length) return row.schedule_date === getDayDateKey(day);
+      return row.day === day;
+    }
+    function scheduleMatchesActiveDay(row) {
+      return scheduleMatchesDay(row, state.activeDay);
     }
     function getTimeCategoryStyles(timeStr) {
       const category = getTimeCategory(timeStr);
@@ -618,19 +634,19 @@
 
     function syncWithPrevious(id, e) {
       e.preventDefault(); e.stopPropagation();
-      const currentRows = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === state.activeDay && r.course === state.activeCourse).sort((a,b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+      const currentRows = state.scheduleRows.filter(r => r.office === state.activeOffice && scheduleMatchesActiveDay(r) && r.course === state.activeCourse).sort((a,b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
       const idx = currentRows.findIndex(r => r.id === id);
       if (idx > 0) { const sch = state.scheduleRows.find(r => r.id === id); sch.startTime = currentRows[idx - 1].endTime; renderApp(); window.__triggerAutoSave && window.__triggerAutoSave(); }
     }
 
     function addRow() {
-      const currentRows = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === state.activeDay && r.course === state.activeCourse);
+      const currentRows = state.scheduleRows.filter(r => r.office === state.activeOffice && scheduleMatchesActiveDay(r) && r.course === state.activeCourse);
       const sorted = [...currentRows].sort((a,b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
       const lastRow = sorted[sorted.length - 1];
       const nextStart = lastRow ? lastRow.endTime : '09:00';
       const startMin = timeToMinutes(nextStart);
       const nextEnd = formatTime(Math.floor((startMin + 60)/60), (startMin + 60)%60);
-      state.scheduleRows.push({ id: Date.now(), office: state.activeOffice, day: state.activeDay, course: state.activeCourse, startTime: nextStart, endTime: nextEnd, room: '', patient: '', content: '', isMultiple: false, secondaryStaff: '' });
+      state.scheduleRows.push({ id: Date.now(), office: state.activeOffice, day: state.activeDay, schedule_date: getDayDateKey(state.activeDay), course: state.activeCourse, startTime: nextStart, endTime: nextEnd, room: '', patient: '', content: '', isMultiple: false, secondaryStaff: '' });
       renderApp(); window.__triggerAutoSave && window.__triggerAutoSave();
     }
 
@@ -778,7 +794,7 @@
     function handleModalPatientSelect(v) { const p = state.patientMaster.find(x => x.office === state.activeOffice && x.name === v); if (p) document.getElementById('modal-room').value = p.room; }
     function handleModalRoomInput(v) { const p = state.patientMaster.find(x => x.office === state.activeOffice && x.room === v && x.name); if (p) document.getElementById('modal-patient').value = p.name; }
     function saveModalEvent() {
-      const d = state.modalState.formData; d.office = state.activeOffice; d.day = document.getElementById('modal-day').value; d.startTime = document.getElementById('modal-startTime').value; d.endTime = document.getElementById('modal-endTime').value; d.room = document.getElementById('modal-room').value; d.patient = document.getElementById('modal-patient').value; d.secondaryStaff = document.getElementById('modal-staff').value; d.content = document.getElementById('modal-content').value; d.isMultiple = !!d.secondaryStaff;
+      const d = state.modalState.formData; d.office = state.activeOffice; d.day = document.getElementById('modal-day').value; d.schedule_date = getDayDateKey(d.day); d.startTime = document.getElementById('modal-startTime').value; d.endTime = document.getElementById('modal-endTime').value; d.room = document.getElementById('modal-room').value; d.patient = document.getElementById('modal-patient').value; d.secondaryStaff = document.getElementById('modal-staff').value; d.content = document.getElementById('modal-content').value; d.isMultiple = !!d.secondaryStaff;
       if (state.modalState.mode === 'create') { d.id = Date.now(); state.scheduleRows.push({ ...d }); } else { const idx = state.scheduleRows.findIndex(r => r.id === d.id); if(idx !== -1) state.scheduleRows[idx] = { ...d }; }
       closeModal(); showToast('保存しました'); window.__triggerAutoSave && window.__triggerAutoSave();
     }
@@ -830,7 +846,7 @@
         Object.keys(state.courseAssignees).forEach(key => {
           if (state.courseAssignees[key] === staffName) { const [o, d, t, c] = key.split('|'); if (o === office && d === day) assignedCourses.push(c); }
         });
-        const staffRows = state.scheduleRows.filter(r => { if (r.office !== office || r.day !== day) return false; return assignedCourses.includes(r.course) || r.secondaryStaff === staffName; }).sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
+        const staffRows = state.scheduleRows.filter(r => { if (r.office !== office || !scheduleMatchesDay(r, day)) return false; return assignedCourses.includes(r.course) || r.secondaryStaff === staffName; }).sort((a, b) => timeToMinutes(a.startTime) - timeToMinutes(b.startTime));
         return `<aside class="sidebar-width w-[240px] border-r border-uber bg-white flex flex-col shrink-0 pt-8 z-20 no-print"><div class="px-6 mb-8 flex items-center justify-between"><div class="flex items-center gap-2 font-black uppercase text-uber-accent italic truncate"><i data-lucide="user" class="w-5 h-5 shrink-0"></i> ${staffName}</div><button onclick="closeStaffSchedule()" class="p-1.5 hover:bg-uber-accent hover:text-white text-uber-accent transition-colors"><i data-lucide="x" class="w-4 h-4"></i></button></div><div class="px-6 mb-4 text-[10px] font-black uppercase opacity-40 tracking-widest">${day}曜日のスケジュール</div><div class="flex-1 overflow-y-auto px-4 flex flex-col gap-3 pb-8">${staffRows.length === 0 ? `<div class="text-[11px] font-black italic opacity-30 text-center py-20 uppercase tracking-widest">予定なし</div>` : staffRows.map(r => `<div class="p-4 border border-uber bg-white flex flex-col gap-2 hover:bg-uber-secondary cursor-pointer group transition-all" onclick="openEditModal(${r.id})"><div class="flex items-center justify-between gap-2"><span class="text-[10px] font-black mono opacity-60">${r.startTime}-${r.endTime.replace(':','')}</span><span class="text-[9px] font-black px-1.5 py-0.5 bg-uber-accent text-white italic uppercase">${r.course}</span></div><div class="text-[12px] font-black uppercase italic truncate group-hover:text-uber-accent transition-colors text-base-adj">${r.patient || '---'}</div>${r.content ? `<div class="text-[9px] font-black opacity-40 truncate uppercase">${r.content}</div>` : ''}${r.secondaryStaff === staffName ? `<div class="flex items-center gap-1 mt-1 text-[8px] font-black text-uber-accent uppercase italic"><i data-lucide="users" class="w-3 h-3"></i> 同行担当</div>` : ''}</div>`).join('')}</div></aside>`;
       }
       const menus = [{ id: 'schedule_setting', icon: 'calendar-days', label: 'スケジュール設定' }, { id: 'visit_schedule', icon: 'table', label: '訪問スケジュール' }, { id: 'master', icon: 'database', label: 'マスタ管理' }];
@@ -854,7 +870,7 @@
     }
 
     function renderVisitSchedule() {
-      const roleLabels = ['看護', '介護']; const max = 8; const curRows = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === state.activeDay);
+      const roleLabels = ['看護', '介護']; const max = 8; const curRows = state.scheduleRows.filter(r => r.office === state.activeOffice && scheduleMatchesActiveDay(r));
       const patients = state.patientMaster.filter(p => p.office === state.activeOffice && p.name).sort((a,b) => (a.room||'').localeCompare(b.room||'', undefined, {numeric: true}));
       let theadCat = roleLabels.map(label => `<th colspan="${max}" class="border border-uber bg-uber-secondary p-2 text-[10px] font-black text-uber-accent uppercase tracking-widest">${label}介入</th>`).join('');
       let tbody = patients.map(p => {
@@ -969,7 +985,7 @@
     }
 
     function renderEventsForCourse(day, course) {
-      let evs = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === day && r.course === course);
+      let evs = state.scheduleRows.filter(r => r.office === state.activeOffice && scheduleMatchesDay(r, day) && r.course === course);
       const dragPreview = state.calendarDrag && state.calendarDrag.day === day && state.calendarDrag.course === course
         ? (() => {
             const range = getCalendarSelectionRange(state.calendarDrag.anchorMinutes, state.calendarDrag.currentMinutes);
@@ -1261,11 +1277,12 @@
     const _originals = {};
 
     // Firestore に書き込む際の安全なフォーマット
-    function toFirestore(row) {
-      return {
+    function toFirestore(row, options = {}) {
+      const payload = {
         id:             row.id || Date.now(),
         office:         row.office        || '',
         day:            row.day           || '',
+        schedule_date:  row.schedule_date || '',
         course:         row.course        || '',
         startTime:      row.startTime     || '',
         endTime:        row.endTime       || '',
@@ -1275,6 +1292,26 @@
         isMultiple:     !!row.isMultiple,
         secondaryStaff: row.secondaryStaff || ''
       };
+      [
+        'source', 'serial_no', 'center_cd', 'schedule_type', 'user_id', 'user_cd',
+        'staff_user_id', 'staff_user_cd', 'staff_center_cd', 'staff_qualification',
+        'cost_type', 'title', 'multi_visitor', 'service_code', 'service_name',
+        'addition_service', 'kasan_service_name', 'nh_hospice_no', 'nh_card_id',
+        'nh_card_type', 'nh_main_course_serial_no', 'nh_main_cancel_flg',
+        'nh_sub_course_serial_no', 'nh_sub_cancel_flg', 'nh_visit_number',
+        'nh_content_json', 'nh_record_coop_flg', 'nh_comment',
+        'companion1_center_cd', 'companion1_user_id', 'companion1_qualificstion',
+        'created_at', 'created_by'
+      ].forEach(key => {
+        if (row[key] !== undefined) payload[key] = row[key];
+      });
+      if (options.markWriteback) {
+        payload.writeback_target = 'sql_schedule';
+        payload.writeback_status = 'pending';
+        payload.writeback_requested_at = Date.now();
+        if (!payload.source) payload.source = 'web_manual';
+      }
+      return payload;
     }
 
     // --- デバウンス処理 (自動保存用) ---
@@ -1342,7 +1379,7 @@
         state.scheduleRows.filter(r => !r._docId).forEach(row => {
           const newRef = doc(schedulesRef);
           row._docId = newRef.id;
-          batch.set(newRef, toFirestore(row));
+          batch.set(newRef, toFirestore(row, { markWriteback: true }));
           _originals[newRef.id] = { ...row };
         });
 
@@ -1351,7 +1388,7 @@
           const orig = _originals[row._docId];
           const curr = toFirestore(row);
           if (!orig || JSON.stringify(curr) !== JSON.stringify(toFirestore(orig))) {
-            batch.update(doc(db, 'schedules', row._docId), curr);
+            batch.update(doc(db, 'schedules', row._docId), toFirestore(row, { markWriteback: true }));
             _originals[row._docId] = { ...row };
           }
         });

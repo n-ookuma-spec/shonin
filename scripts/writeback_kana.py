@@ -148,7 +148,7 @@ def fetch_modified_patients(db_fs, office_filter=None):
     for doc in docs:
         d = doc.to_dict()
         d["_doc_ref"] = doc.reference
-        if office_filter and d.get("office") != office_filter:
+        if office_filter and not office_matches(d, office_filter):
             continue
         results.append(d)
     return results
@@ -162,10 +162,19 @@ def fetch_modified_staffs(db_fs, office_filter=None):
     for doc in docs:
         d = doc.to_dict()
         d["_doc_ref"] = doc.reference
-        if office_filter and d.get("office") != office_filter:
+        if office_filter and not office_matches(d, office_filter):
             continue
         results.append(d)
     return results
+
+
+def office_matches(data: dict, office_filter: str | None) -> bool:
+    """office(事業所名) または center_cd のどちらでも絞り込めるようにする。"""
+    if not office_filter:
+        return True
+    office = str(data.get("office") or "").strip()
+    center_cd = str(data.get("center_cd") or "").strip()
+    return office == office_filter or center_cd == office_filter
 
 
 # ─────────────────────────────────────────────
@@ -270,7 +279,7 @@ class KanaWatcher:
                     continue
 
                 # 事業所フィルター
-                if self.office_filter and data.get("office") != self.office_filter:
+                if self.office_filter and not office_matches(data, self.office_filter):
                     continue
 
                 doc_id = doc.id
