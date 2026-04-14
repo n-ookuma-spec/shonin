@@ -49,6 +49,7 @@
     .bg-grid { background-image: linear-gradient(#E8E8E8 1px, transparent 1px); background-size: 100% 60px; }
     .cal-event { cursor: pointer; user-select: none; transition: all 0.1s ease; border: 1px solid #2C2C2C; }
     .cal-event.dragging { opacity: 0.4; }
+    .calendar-drag-preview { position: absolute; left: 2px; right: 2px; border: 2px solid #2C2C2C; background: rgba(44, 44, 44, 0.12); pointer-events: none; z-index: 35; }
 
     #context-menu { display: none; position: fixed; z-index: 5000; background: white; border: 2px solid #2C2C2C; padding: 4px; min-width: 180px; box-shadow: 10px 10px 0px rgba(0,0,0,0.05); }
     .sidebar-active-indicator { position: absolute; left: 0; width: 4px; height: 100%; background-color: #2C2C2C; }
@@ -106,7 +107,7 @@
       modalState: { isOpen: false, mode: 'create', formData: {} },
       duplicateModal: { isOpen: false, targetId: null, selectedDays: [] },
       confirmModal: { isOpen: false, message: '', onConfirm: null },
-      officeMaster: [], staffMaster: [], patientMaster: [], courseAssignees: {},
+      officeMaster: [], officeDetails: {}, selectedOfficeDetail: null, staffMaster: [], patientMaster: [], courseAssignees: {},
       courseNames: { 'day_ns': ['看1'], 'day_cw': ['介1'], 'night': ['夜看1'] },
       tabConfigs: [{ id: 'day_ns', label: '日勤（看）' }, { id: 'day_cw', label: '日勤（介）' }, { id: 'night', label: '夜勤' }],
       scheduleRows: [],
@@ -117,7 +118,8 @@
       selectedMaster: null,
       viewingStaffSchedule: null,
       staffPicker: { isOpen: false, targetCourse: null, searchQuery: '' },
-      patientModal: { isOpen: false, formData: { patterns: {} } }
+      patientModal: { isOpen: false, formData: { patterns: {} } },
+      calendarDrag: null
     };
 
     function openPatientModal(patient) {
@@ -175,9 +177,18 @@
     function renderStaffPicker() {
       if (!state.staffPicker.isOpen) return '';
       const course = state.staffPicker.targetCourse;
-      const currentStaff = state.staffMaster.filter(s => s.office === state.activeOffice);
-      const roles = ["看護師", "准看護師", "訪問介護"];
-      
+      const q = state.staffPicker.searchQuery;
+      const currentStaff = state.staffMaster
+        .filter(s => s.office === state.activeOffice && (!q || (s.name||'').includes(q)))
+        .sort((a,b) => (a.name||'').localeCompare(b.name||'', 'ja'));
+      const roles = [...new Set(currentStaff.map(s => s.role).filter(Boolean))].sort();
+      const noRole = currentStaff.filter(s => !s.role);
+      const staffCard = s => `<button onclick="selectStaffForCourse('${s.name.replace(/'/g, "\\'")}')"
+        class="p-4 border border-uber-border hover:border-uber-accent hover:bg-uber-accent hover:text-white transition-all text-left group">
+        <div class="text-[13px] font-black uppercase italic mb-0.5">${s.name}</div>
+        ${s.role ? `<div class="text-[9px] font-bold opacity-40 group-hover:opacity-70">${s.role}</div>` : ''}
+      </button>`;
+
       return `<div class="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-6" onclick="closeStaffPicker()">
         <div class="bg-white border-[3px] border-uber w-full max-w-[500px] shadow-2xl overflow-hidden" onclick="event.stopPropagation()">
           <div class="bg-uber-accent p-5 text-white flex items-center justify-between">
@@ -189,7 +200,7 @@
           </div>
           <div class="p-6">
             <div class="relative mb-6">
-              <input type="text" placeholder="名前で検索..." oninput="state.staffPicker.searchQuery=this.value; renderApp();" 
+              <input type="text" placeholder="名前で検索..." oninput="state.staffPicker.searchQuery=this.value; renderApp();"
                 class="w-full bg-uber-secondary border border-uber p-4 pl-12 font-black text-sm outline-none focus:bg-white transition-all italic text-uber-accent"
                 value="${state.staffPicker.searchQuery}">
               <i data-lucide="search" class="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 opacity-30"></i>
@@ -198,24 +209,17 @@
               <button onclick="selectStaffForCourse('')" class="w-full text-left p-4 mb-4 border border-dashed border-uber-accent/30 hover:border-uber-accent hover:bg-uber-secondary transition-all font-black text-[11px] uppercase italic text-uber-accent/60 flex items-center gap-3">
                 <i data-lucide="user-minus" class="w-4 h-4"></i> 担当者なしに設定
               </button>
-              ${roles.map(role => {
-                const staffInRole = currentStaff.filter(s => s.role === role && (s.name.includes(state.staffPicker.searchQuery)));
-                if (staffInRole.length === 0) return '';
-                return `
-                  <div class="mb-6">
-                    <div class="text-[9px] font-black uppercase tracking-[0.2em] opacity-30 mb-3 ml-1">${role}</div>
-                    <div class="grid grid-cols-2 gap-2">
-                      ${staffInRole.map(s => `
-                        <button onclick="selectStaffForCourse('${s.name}')" 
-                          class="p-4 border border-uber-border hover:border-uber-accent hover:bg-uber-accent hover:text-white transition-all text-left group">
-                          <div class="text-[13px] font-black uppercase italic mb-0.5">${s.name}</div>
-                          <div class="text-[9px] font-bold opacity-40 group-hover:opacity-70">${s.role}</div>
-                        </button>
-                      `).join('')}
-                    </div>
-                  </div>
-                `;
-              }).join('')}
+              ${roles.map(role => `
+                <div class="mb-6">
+                  <div class="text-[9px] font-black uppercase tracking-[0.2em] opacity-30 mb-3 ml-1">${role}</div>
+                  <div class="grid grid-cols-2 gap-2">${currentStaff.filter(s=>s.role===role).map(staffCard).join('')}</div>
+                </div>`).join('')}
+              ${noRole.length ? `
+                <div class="mb-6">
+                  <div class="text-[9px] font-black uppercase tracking-[0.2em] opacity-30 mb-3 ml-1">${roles.length ? '未分類' : '全職員'}</div>
+                  <div class="grid grid-cols-2 gap-2">${noRole.map(staffCard).join('')}</div>
+                </div>` : ''}
+              ${currentStaff.length === 0 ? `<div class="text-center py-8 text-sm opacity-40">該当する職員がいません</div>` : ''}
             </div>
           </div>
         </div>
@@ -267,8 +271,30 @@
       document.body.appendChild(div); lucide.createIcons({root: div}); return div;
     }
 
+    const CALENDAR_START_MINUTES = 7 * 60;
+    const CALENDAR_END_MINUTES = 22 * 60;
+    const CALENDAR_SLOT_MINUTES = 30;
+    const CALENDAR_DURATION_MINUTES = CALENDAR_END_MINUTES - CALENDAR_START_MINUTES;
+
     function timeToMinutes(t) { if(!t) return 0; const [h,m] = t.split(':').map(Number); return h * 60 + m; }
     function timeToPx(t) { return Math.max(0, timeToMinutes(t) - (7 * 60)); }
+    function minutesToTime(minutes) { return formatTime(Math.floor(minutes / 60), minutes % 60); }
+    function clampCalendarMinutes(minutes) { return Math.min(CALENDAR_END_MINUTES, Math.max(CALENDAR_START_MINUTES, minutes)); }
+    function clampCalendarOffset(offsetMinutes) { return Math.min(CALENDAR_DURATION_MINUTES - CALENDAR_SLOT_MINUTES, Math.max(0, offsetMinutes)); }
+    function snapCalendarOffset(offsetMinutes) { return clampCalendarOffset(Math.floor(offsetMinutes / CALENDAR_SLOT_MINUTES) * CALENDAR_SLOT_MINUTES); }
+    function getMinutesFromCalendarPointer(clientY, rect) {
+      const offsetMinutes = snapCalendarOffset(clientY - rect.top);
+      return clampCalendarMinutes(CALENDAR_START_MINUTES + offsetMinutes);
+    }
+    function getCalendarSelectionRange(anchorMinutes, currentMinutes) {
+      const start = Math.min(anchorMinutes, currentMinutes);
+      const end = Math.max(anchorMinutes, currentMinutes) + CALENDAR_SLOT_MINUTES;
+      return { start, end: clampCalendarMinutes(end) };
+    }
+    function getCalendarSelectionPayload(anchorMinutes, currentMinutes) {
+      const range = getCalendarSelectionRange(anchorMinutes, currentMinutes);
+      return { start: minutesToTime(range.start), end: minutesToTime(range.end) };
+    }
     function getTimeCategory(timeStr) {
       const h = parseInt(timeStr?.split(':')[0] || '0', 10);
       if (h < 8) return '早朝'; if (h >= 18) return '夜間'; return '日中';
@@ -298,7 +324,7 @@
     function setActiveTab(t) { state.activeTab = t; state.activeCourse = (state.courseNames[t] && state.courseNames[t][0]) || '看1'; saveUIState(); renderApp(); }
     function setActiveDay(d) { state.activeDay = d; saveUIState(); renderApp(); }
     function setActiveCourse(c) { state.activeCourse = c; renderApp(); }
-    function openMasterDetail(m) { state.selectedMaster = m; renderApp(); }
+    function openMasterDetail(m) { state.selectedMaster = m; state.selectedOfficeDetail = null; renderApp(); }
     function goToToday() { initDates(); saveUIState(); renderApp(); }
 
     function selectPatient(id, name, room) {
@@ -402,6 +428,55 @@
     }
 
     function openCreateModal(day, course, startTime) { const endMin = timeToMinutes(startTime) + 60; state.modalState = { isOpen: true, mode: 'create', formData: { day, course, startTime, endTime: formatTime(Math.floor(endMin/60), endMin%60), room: '', patient: '', content: '', secondaryStaff: '' } }; renderApp(); }
+    function defaultCalendarRangeSelect(payload, selection) {
+      state.modalState = {
+        isOpen: true,
+        mode: 'create',
+        formData: {
+          day: selection.day,
+          course: selection.course,
+          startTime: payload.start,
+          endTime: payload.end,
+          room: '',
+          patient: '',
+          content: '',
+          secondaryStaff: ''
+        }
+      };
+      renderApp();
+    }
+    function finalizeCalendarSelection(selection) {
+      if (!selection) return;
+      const payload = getCalendarSelectionPayload(selection.anchorMinutes, selection.currentMinutes);
+      const handler = typeof window.onCalendarRangeSelect === 'function'
+        ? window.onCalendarRangeSelect
+        : defaultCalendarRangeSelect;
+      handler(payload, selection);
+    }
+    function startCalendarDrag(day, course, e) {
+      if (e.button !== 0 || e.target.closest('.cal-event')) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const rect = e.currentTarget.getBoundingClientRect();
+      const anchorMinutes = getMinutesFromCalendarPointer(e.clientY, rect);
+      state.calendarDrag = { day, course, anchorMinutes, currentMinutes: anchorMinutes, rectTop: rect.top, rectHeight: rect.height };
+      renderApp();
+    }
+    function updateCalendarDrag(e) {
+      if (!state.calendarDrag) return;
+      const selection = state.calendarDrag;
+      const rect = { top: selection.rectTop, height: selection.rectHeight };
+      const nextMinutes = getMinutesFromCalendarPointer(e.clientY, rect);
+      if (nextMinutes === selection.currentMinutes) return;
+      selection.currentMinutes = nextMinutes;
+      renderApp();
+    }
+    function endCalendarDrag() {
+      if (!state.calendarDrag) return;
+      const selection = { ...state.calendarDrag };
+      state.calendarDrag = null;
+      finalizeCalendarSelection(selection);
+    }
     function openEditModal(id, e) { if(e) e.stopPropagation(); const sch = state.scheduleRows.find(r => r.id === id); state.modalState = { isOpen: true, mode: 'edit', formData: { ...sch } }; renderApp(); }
     function closeModal() { state.modalState.isOpen = false; renderApp(); }
     function handleModalPatientSelect(v) { const p = state.patientMaster.find(x => x.office === state.activeOffice && x.name === v); if (p) document.getElementById('modal-room').value = p.room; }
@@ -575,7 +650,7 @@
             ${Array.from({length:15}, (_,i)=>i+7).map(h => `<div class="h-[60px] relative"><span class="absolute -top-2.5 right-3 text-[10px] font-bold opacity-30 mono italic text-uber-accent">${h}:00</span></div>`).join('')}
           </div>
           <div class="flex-1 flex relative">
-            ${courses.map(c => `<div class="flex-1 border-r border-uber relative min-h-[900px] hover:bg-uber-secondary/5 transition-colors" onclick="const rect=this.getBoundingClientRect(); const startMin=7*60+Math.floor((event.clientY-rect.top)/15)*15; openCreateModal('${state.activeDay}', '${c}', formatTime(Math.floor(startMin/60), startMin%60));" ondragover="event.preventDefault()" ondrop="handleDrop(event, '${c}')">${renderEventsForCourse(state.activeDay, c)}</div>`).join('')}
+            ${courses.map(c => `<div class="flex-1 border-r border-uber relative min-h-[900px] hover:bg-uber-secondary/5 transition-colors select-none" onmousedown="startCalendarDrag('${state.activeDay}', '${c}', event)" ondragover="event.preventDefault()" ondrop="handleDrop(event, '${c}')">${renderEventsForCourse(state.activeDay, c)}</div>`).join('')}
             <div id="now-line-calendar" class="hidden"></div>
           </div>
         </div>
@@ -584,9 +659,17 @@
 
     function renderEventsForCourse(day, course) {
       let evs = state.scheduleRows.filter(r => r.office === state.activeOffice && r.day === day && r.course === course);
-      return evs.map(ev => {
+      const dragPreview = state.calendarDrag && state.calendarDrag.day === day && state.calendarDrag.course === course
+        ? (() => {
+            const range = getCalendarSelectionRange(state.calendarDrag.anchorMinutes, state.calendarDrag.currentMinutes);
+            const top = range.start - CALENDAR_START_MINUTES;
+            const height = Math.max(CALENDAR_SLOT_MINUTES, range.end - range.start);
+            return `<div class="calendar-drag-preview" style="top:${top}px; height:${height}px;"><div class="px-2 py-1 text-[10px] font-black mono text-uber-accent">${minutesToTime(range.start)} - ${minutesToTime(range.end)}</div></div>`;
+          })()
+        : '';
+      return dragPreview + evs.map(ev => {
         const top = timeToPx(ev.startTime); const height = Math.max(30, timeToPx(ev.endTime) - top);
-        return `<div class="cal-event absolute w-[calc(100%-4px)] left-0.5 bg-white p-2 overflow-hidden flex items-center gap-2 hover:bg-uber-accent hover:text-white transition-colors" draggable="true" ondragstart="handleDragStart(${ev.id}, event)" ondragend="handleDragEnd(event)" style="top:${top}px; height:${height}px;" onclick="event.stopPropagation(); openEditModal(${ev.id})" oncontextmenu="showContextMenu(${ev.id}, event)"><div class="text-[10px] font-black mono opacity-40 group-hover:opacity-100 shrink-0">${ev.startTime}</div><div class="text-[12px] font-black leading-tight italic uppercase truncate flex-1"><span>${ev.patient || '---'}</span></div>${ev.isMultiple && ev.secondaryStaff ? `<div class="flex items-center gap-1 text-[10px] font-black italic opacity-60 truncate"><i data-lucide="users" class="w-3.5 h-3.5"></i><span>${ev.secondaryStaff}</span></div>` : ''}</div>`;
+        return `<div class="cal-event absolute w-[calc(100%-4px)] left-0.5 bg-white p-2 overflow-hidden flex items-center gap-2 hover:bg-uber-accent hover:text-white transition-colors" draggable="true" ondragstart="handleDragStart(${ev.id}, event)" ondragend="handleDragEnd(event)" onmousedown="event.stopPropagation()" style="top:${top}px; height:${height}px;" onclick="event.stopPropagation(); openEditModal(${ev.id})" oncontextmenu="showContextMenu(${ev.id}, event)"><div class="text-[10px] font-black mono opacity-40 group-hover:opacity-100 shrink-0">${ev.startTime}</div><div class="text-[12px] font-black leading-tight italic uppercase truncate flex-1"><span>${ev.patient || '---'}</span></div>${ev.isMultiple && ev.secondaryStaff ? `<div class="flex items-center gap-1 text-[10px] font-black italic opacity-60 truncate"><i data-lucide="users" class="w-3.5 h-3.5"></i><span>${ev.secondaryStaff}</span></div>` : ''}</div>`;
       }).join('');
     }
 
@@ -599,14 +682,40 @@
       if (restrictedEmails.includes(state.userInfo.email)) titles = titles.filter(t => t.label !== '事業所マスタ');
       return `<div class="p-16 bg-white flex-1 overflow-auto"><div class="mb-16 border-l-[10px] border-uber-accent pl-8 text-uber-accent uppercase italic"><h2 class="text-5xl font-black tracking-tighter mb-4">マスタ管理</h2><p class="text-[14px] font-bold opacity-40 tracking-[0.3em]">システム構成 ＆ データベース</p></div><div class="grid grid-cols-1 md:grid-cols-3 gap-0 border-t border-l border-uber max-w-6xl">${titles.map(t => `<button onclick="openMasterDetail('${t.label}')" class="group p-12 border-r border-b border-uber hover:bg-uber-accent hover:text-white transition-all flex flex-col gap-10 bg-white text-left uppercase italic text-uber-accent"><div class="w-16 h-16 bg-uber-accent text-white group-hover:bg-white group-hover:text-uber-accent transition-all flex items-center justify-center"><i data-lucide="${t.icon}" class="w-8 h-8"></i></div><div><span class="text-2xl font-black block tracking-tighter mb-2 uppercase text-uber-accent group-hover:text-white">${t.label}</span><span class="text-[11px] font-black uppercase tracking-[0.2em] opacity-40 group-hover:opacity-100 group-hover:text-white">${t.desc}</span></div></button>`).join('')}</div></div>`;
     }
-    function renderOfficeMaster() { return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><h3 class="text-4xl mb-12 tracking-tighter uppercase italic font-black">事業所マスタ</h3><div class="grid grid-cols-2 lg:grid-cols-4 gap-0 border-t border-l border-uber">${state.officeMaster.map(name => `<div class="p-8 border-r border-b border-uber hover:bg-uber-accent hover:text-white transition-colors">${name}</div>`).join('')}</div></div>`; }
+    function renderOfficeMaster() {
+      if (state.selectedOfficeDetail) return renderOfficeDetail();
+      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><h3 class="text-4xl mb-12 tracking-tighter uppercase italic font-black">事業所マスタ</h3><div class="grid grid-cols-2 lg:grid-cols-4 gap-0 border-t border-l border-uber">${state.officeMaster.map(name => `<button onclick="state.selectedOfficeDetail='${name.replace(/'/g,"\\'")}'; renderApp();" class="p-8 border-r border-b border-uber hover:bg-uber-accent hover:text-white transition-colors text-left group flex justify-between items-center w-full"><span>${name}</span><i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></button>`).join('')}</div></div>`;
+    }
+    function renderOfficeDetail() {
+      const name = state.selectedOfficeDetail;
+      const detail = state.officeDetails[name] || {};
+      const patients = state.patientMaster.filter(p => p.office === name);
+      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic">
+        <button onclick="state.selectedOfficeDetail=null; renderApp();" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 事業所一覧に戻る</button>
+        <h3 class="text-4xl mb-12 tracking-tighter uppercase italic font-black">${name}</h3>
+        <div class="max-w-3xl">
+          <table class="w-full border-collapse mb-12">
+            <tbody>
+              <tr><td class="border border-uber p-4 bg-uber-secondary text-[11px] tracking-widest w-48">事業所コード</td><td class="border border-uber p-4 text-lg mono">${detail.center_cd || '—'}</td></tr>
+              <tr><td class="border border-uber p-4 bg-uber-secondary text-[11px] tracking-widest">事業所名</td><td class="border border-uber p-4 text-lg">${detail.name || '—'}</td></tr>
+              <tr><td class="border border-uber p-4 bg-uber-secondary text-[11px] tracking-widest">最終同期</td><td class="border border-uber p-4 text-sm mono">${detail.updatedAt ? new Date(detail.updatedAt.seconds * 1000).toLocaleString('ja-JP') : '—'}</td></tr>
+            </tbody>
+          </table>
+          <div class="mb-4 text-[11px] tracking-widest border-l-4 border-uber-accent pl-4">所属利用者 (${patients.length}名)</div>
+          <div class="grid grid-cols-2 md:grid-cols-3 gap-0 border-t border-l border-uber">${patients.length ? patients.map(p => `<div class="p-4 border-r border-b border-uber text-[13px]">${p.name || p.full_name || '—'}</div>`).join('') : '<div class="p-4 border-r border-b border-uber text-sm opacity-40 col-span-3">利用者なし</div>'}</div>
+        </div>
+      </div>`;
+    }
     function renderStaffMaster() {
-      const currentStaff = state.staffMaster.filter(s => s.office === state.activeOffice);
-      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><div class="mb-16 border-l-[10px] border-uber-accent pl-8 text-uber-accent uppercase italic font-black"><h3 class="text-4xl font-black tracking-tighter mb-4 uppercase">職員マスタ</h3><div class="text-[12px] opacity-40">${state.activeOffice}</div></div><div class="grid grid-cols-1 md:grid-cols-3 gap-12 max-w-6xl">${["看護師", "准看護師", "訪問介護"].map(role => `<div class="flex flex-col gap-0 border border-uber bg-uber-secondary text-uber-accent"><div class="flex items-center justify-between p-5 bg-uber-accent text-white font-black uppercase italic"><h4 class="text-[11px] tracking-[0.3em]">${role}</h4><span class="text-[11px] font-black text-uber-accent bg-white px-3 py-1 mono">${currentStaff.filter(s=>s.role===role).length}</span></div><div class="flex flex-col">${currentStaff.filter(s=>s.role===role).map(s => `<div class="p-5 border-b border-uber font-black text-uber-accent hover:bg-uber-accent hover:text-white transition-all flex items-center justify-between group italic uppercase">${s.name}<i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></div>`).join('')}</div></div>`).join('')}</div></div>`;
+      const currentStaff = state.staffMaster.filter(s => s.office === state.activeOffice).sort((a,b) => (a.name||'').localeCompare(b.name||'', 'ja'));
+      const roles = [...new Set(currentStaff.map(s => s.role).filter(Boolean))].sort();
+      const noRole = currentStaff.filter(s => !s.role);
+      const groups = roles.length ? roles : [];
+      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><div class="mb-16 border-l-[10px] border-uber-accent pl-8 text-uber-accent uppercase italic font-black"><h3 class="text-4xl font-black tracking-tighter mb-4 uppercase">職員マスタ</h3><div class="text-[12px] opacity-40">${state.activeOffice} — ${currentStaff.length}名</div></div><div class="grid grid-cols-1 md:grid-cols-3 gap-12 max-w-6xl">${groups.map(role => `<div class="flex flex-col gap-0 border border-uber bg-uber-secondary text-uber-accent"><div class="flex items-center justify-between p-5 bg-uber-accent text-white font-black uppercase italic"><h4 class="text-[11px] tracking-[0.3em]">${role}</h4><span class="text-[11px] font-black text-uber-accent bg-white px-3 py-1 mono">${currentStaff.filter(s=>s.role===role).length}</span></div><div class="flex flex-col">${currentStaff.filter(s=>s.role===role).map(s => `<div class="p-5 border-b border-uber font-black text-uber-accent hover:bg-uber-accent hover:text-white transition-all flex items-center justify-between group italic uppercase">${s.name}<i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></div>`).join('')}</div></div>`).join('')}${noRole.length ? `<div class="flex flex-col gap-0 border border-uber bg-uber-secondary text-uber-accent"><div class="flex items-center justify-between p-5 bg-uber-accent text-white font-black uppercase italic"><h4 class="text-[11px] tracking-[0.3em]">${groups.length ? '未分類' : '全職員'}</h4><span class="text-[11px] font-black text-uber-accent bg-white px-3 py-1 mono">${noRole.length}</span></div><div class="flex flex-col">${noRole.map(s => `<div class="p-5 border-b border-uber font-black text-uber-accent hover:bg-uber-accent hover:text-white transition-all flex items-center justify-between group italic uppercase">${s.name}<i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></div>`).join('')}</div></div>` : ''}${currentStaff.length === 0 ? '<div class="col-span-3 p-8 border border-uber text-center opacity-40">この事業所には職員がいません</div>' : ''}</div></div>`;
     }
     function renderPatientMaster() {
-      const floors = [1, 2, 3, 4]; const currentPatients = state.patientMaster.filter(p => p.office === state.activeOffice);
-      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><h3 class="text-4xl mb-16 tracking-tighter uppercase italic font-black">利用者マスタ <span class="text-sm opacity-20 ml-4">${state.activeOffice}</span></h3><div class="grid grid-cols-1 md:grid-cols-4 gap-0 border-t border-l border-uber">${floors.map(f => `<div class="flex flex-col border-r border-uber"><div class="bg-uber-accent text-white p-4 font-black italic uppercase"><div class="text-[11px] tracking-[0.3em] font-black italic">${f}階</div></div><div class="flex flex-col">${currentPatients.filter(p => parseInt(p.floor) === f).map(p => `<button onclick="openPatientModal(${JSON.stringify(p).replace(/"/g, '&quot;')})" class="p-5 border-b border-uber flex justify-between items-center hover:bg-uber-secondary transition-all text-uber-accent w-full text-left"><span class="text-[11px] mono opacity-60 font-black">${p.room}</span><span class="text-[13px] italic uppercase font-black">${p.name || '<span class="opacity-60 not-italic">空室</span>'}</span></button>`).join('')}</div></div>`).join('')}</div></div>`;
+      const currentPatients = state.patientMaster.filter(p => p.office === state.activeOffice).sort((a,b) => (a.name||'').localeCompare(b.name||'', 'ja'));
+      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><h3 class="text-4xl mb-4 tracking-tighter uppercase italic font-black">利用者マスタ</h3><div class="text-[12px] opacity-40 mb-12">${state.activeOffice} — ${currentPatients.length}名</div><div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-0 border-t border-l border-uber">${currentPatients.map(p => `<button onclick="openPatientModal(${JSON.stringify(p).replace(/"/g, '&quot;')})" class="p-5 border-r border-b border-uber flex items-center hover:bg-uber-accent hover:text-white transition-all text-uber-accent w-full text-left group"><span class="text-[13px] italic uppercase font-black flex-1">${p.name || '<span class="opacity-40 not-italic">名前なし</span>'}</span><i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></button>`).join('')}${currentPatients.length === 0 ? '<div class="p-8 border-r border-b border-uber opacity-40 col-span-4 text-center">この事業所には利用者がいません</div>' : ''}</div></div>`;
     }
 
     function renderPatientModal() {
@@ -659,6 +768,8 @@
 
     // 初期描画（Firebase データ取得は後続のモジュールスクリプトが行う）
     document.addEventListener('DOMContentLoaded', () => {
+      document.addEventListener('mousemove', updateCalendarDrag);
+      document.addEventListener('mouseup', endCalendarDrag);
       restoreUIState();
       renderApp();
       setInterval(updateTimeMeter, 60000);
@@ -872,10 +983,13 @@
             getDoc(doc(db, 'settings', 'config'))
           ]);
 
-        // offices: { name }
-        state.officeMaster = officesSnap.docs
-          .map(d => d.data().name)
-          .filter(Boolean);
+        // offices: { name, center_cd, ... }
+        state.officeDetails = {};
+        officesSnap.docs.forEach(d => {
+          const data = d.data();
+          if (data.name) state.officeDetails[data.name] = { id: d.id, ...data };
+        });
+        state.officeMaster = Object.keys(state.officeDetails);
 
         // staffs: { office, name, role }
         state.staffMaster = staffsSnap.docs.map(d => d.data());
