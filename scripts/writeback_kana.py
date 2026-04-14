@@ -50,12 +50,20 @@ except ImportError:
 # ログ設定
 # ─────────────────────────────────────────────
 LOG_FILE = Path(__file__).parent / "writeback_kana.log"
+
+# Windows cp932 で emダッシュ等が出力エラーになるのを防ぐ
+_stream_handler = logging.StreamHandler(sys.stdout)
+_stream_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+if sys.platform == "win32":
+    import io
+    _stream_handler.stream = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
+        _stream_handler,
     ],
 )
 logger = logging.getLogger(__name__)
@@ -134,7 +142,7 @@ def init_firestore():
 # ─────────────────────────────────────────────
 def fetch_modified_patients(db_fs, office_filter=None):
     """kana_modified: true の利用者レコードを返す。"""
-    query = db_fs.collection("patients").where("kana_modified", "==", True)
+    query = db_fs.collection("patients").where(filter=firestore.FieldFilter("kana_modified", "==", True))
     docs = query.stream()
     results = []
     for doc in docs:
@@ -148,7 +156,7 @@ def fetch_modified_patients(db_fs, office_filter=None):
 
 def fetch_modified_staffs(db_fs, office_filter=None):
     """kana_modified: true の職員レコードを返す。"""
-    query = db_fs.collection("staffs").where("kana_modified", "==", True)
+    query = db_fs.collection("staffs").where(filter=firestore.FieldFilter("kana_modified", "==", True))
     docs = query.stream()
     results = []
     for doc in docs:
@@ -182,7 +190,7 @@ def writeback_record(cursor, user_id, family_kana, first_kana, dry_run=False):
     cursor.execute(UPDATE_SQL, (family_kana or "", first_kana or "", user_id))
     rows = cursor.rowcount
     if rows == 0:
-        logger.warning(f"  USER_ID={user_id} がHLC_MST_USRに見つかりません — スキップ")
+        logger.warning(f"  USER_ID={user_id} がHLC_MST_USRに見つかりません -スキップ")
         return False
     logger.info(f"  更新: USER_ID={user_id}  姓カナ='{family_kana}'  名カナ='{first_kana}'")
     return True
@@ -241,7 +249,7 @@ class KanaWatcher:
             # 接続が生きているか確認
             self._conn.execute("SELECT 1")
         except Exception:
-            logger.warning("SQL Server 接続が切断 — 再接続中...")
+            logger.warning("SQL Server 接続が切断 -再接続中...")
             try:
                 self._conn.close()
             except Exception:
@@ -272,7 +280,7 @@ class KanaWatcher:
 
                 user_id = data.get("user_id") or data.get("USER_ID")
                 if not user_id:
-                    logger.warning(f"[{collection_name}] {data.get('name')} に user_id なし — スキップ")
+                    logger.warning(f"[{collection_name}] {data.get('name')} に user_id なし -スキップ")
                     continue
 
                 family_kana = data.get("family_name_kana", "")
@@ -327,11 +335,11 @@ class KanaWatcher:
 
         # SQL Server 接続を事前確認
         conn = self._get_connection()
-        logger.info("SQL Server 接続OK — リスナー開始")
+        logger.info("SQL Server 接続OK -リスナー開始")
 
         # Firestore リスナー登録
-        patient_query = self.db_fs.collection("patients").where("kana_modified", "==", True)
-        staff_query = self.db_fs.collection("staffs").where("kana_modified", "==", True)
+        patient_query = self.db_fs.collection("patients").where(filter=firestore.FieldFilter("kana_modified", "==", True))
+        staff_query = self.db_fs.collection("staffs").where(filter=firestore.FieldFilter("kana_modified", "==", True))
 
         patient_watch = patient_query.on_snapshot(
             lambda docs, changes, read_time: self._process_snapshot("patients", docs, changes, read_time)
@@ -384,7 +392,7 @@ def run_batch(db_fs, args):
         for p in patients:
             user_id = p.get("user_id") or p.get("USER_ID")
             if not user_id:
-                logger.warning(f"利用者 {p.get('name')} に user_id なし — スキップ")
+                logger.warning(f"利用者 {p.get('name')} に user_id なし -スキップ")
                 patient_ng += 1
                 continue
             ok = writeback_record(
@@ -403,7 +411,7 @@ def run_batch(db_fs, args):
         for s in staffs:
             user_id = s.get("user_id") or s.get("USER_ID")
             if not user_id:
-                logger.warning(f"職員 {s.get('name')} に user_id なし — スキップ")
+                logger.warning(f"職員 {s.get('name')} に user_id なし -スキップ")
                 staff_ng += 1
                 continue
             ok = writeback_record(
