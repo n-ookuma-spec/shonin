@@ -9,13 +9,16 @@ env:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Authenticate to Google Cloud (Service Account)
-        run: |
-          echo '${{ secrets.GCP_SA_KEY_PRODUCTION }}' > "${{ runner.temp }}/gcp-sa.json"
-          test -s "${{ runner.temp }}/gcp-sa.json"
-          echo "GOOGLE_APPLICATION_CREDENTIALS=${{ runner.temp }}/gcp-sa.json" >> "$GITHUB_ENV"
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: '${{ secrets.GCP_SA_KEY_PRODUCTION }}'
+          create_credentials_file: true
+          export_environment_variables: true
       - name: Install Firebase CLI
         run: npm install -g firebase-tools
       - name: Verify Firebase CLI
