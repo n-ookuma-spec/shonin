@@ -944,11 +944,47 @@
       </div>`;
     }
     function renderStaffMaster() {
-      const currentStaff = state.staffMaster.filter(s => s.office === state.activeOffice).sort((a,b) => (a.name||'').localeCompare(b.name||'', 'ja'));
-      const roles = [...new Set(currentStaff.map(s => s.role).filter(Boolean))].sort();
-      const noRole = currentStaff.filter(s => !s.role);
-      const groups = roles.length ? roles : [];
-      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><div class="mb-16 border-l-[10px] border-uber-accent pl-8 text-uber-accent uppercase italic font-black"><h3 class="text-4xl font-black tracking-tighter mb-4 uppercase">職員マスタ</h3><div class="text-[12px] opacity-40">${state.activeOffice} — ${currentStaff.length}名</div></div><div class="grid grid-cols-1 md:grid-cols-3 gap-12 max-w-6xl">${groups.map(role => `<div class="flex flex-col gap-0 border border-uber bg-uber-secondary text-uber-accent"><div class="flex items-center justify-between p-5 bg-uber-accent text-white font-black uppercase italic"><h4 class="text-[11px] tracking-[0.3em]">${role}</h4><span class="text-[11px] font-black text-uber-accent bg-white px-3 py-1 mono">${currentStaff.filter(s=>s.role===role).length}</span></div><div class="flex flex-col">${currentStaff.filter(s=>s.role===role).map(s => `<div class="p-5 border-b border-uber font-black text-uber-accent hover:bg-uber-accent hover:text-white transition-all flex items-center justify-between group italic uppercase">${s.name}<i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></div>`).join('')}</div></div>`).join('')}${noRole.length ? `<div class="flex flex-col gap-0 border border-uber bg-uber-secondary text-uber-accent"><div class="flex items-center justify-between p-5 bg-uber-accent text-white font-black uppercase italic"><h4 class="text-[11px] tracking-[0.3em]">${groups.length ? '未分類' : '全職員'}</h4><span class="text-[11px] font-black text-uber-accent bg-white px-3 py-1 mono">${noRole.length}</span></div><div class="flex flex-col">${noRole.map(s => `<div class="p-5 border-b border-uber font-black text-uber-accent hover:bg-uber-accent hover:text-white transition-all flex items-center justify-between group italic uppercase">${s.name}<i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></div>`).join('')}</div></div>` : ''}${currentStaff.length === 0 ? '<div class="col-span-3 p-8 border border-uber text-center opacity-40">この事業所には職員がいません</div>' : ''}</div></div>`;
+      const allStaff = state.staffMaster
+        .filter(s => s.office === state.activeOffice)
+        .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'ja'));
+
+      const rows = allStaff.map(s => {
+        const roleBadge = s.role
+          ? `<span style="background:#F8F8F8;border:1px solid #E8E8E8;padding:2px 8px;font-size:9px;font-weight:900;">${s.role}</span>`
+          : `<span style="opacity:0.3;font-size:12px;">—</span>`;
+        return `<div class="master-row" data-name="${(s.name||'').replace(/"/g,'&quot;')}" data-room="" data-pattern=""
+          style="display:grid;grid-template-columns:1fr 120px;align-items:center;padding:0 12px;min-height:44px;border-bottom:1px solid #E8E8E8;"
+          onmouseover="this.style.background='#F8F8F8'"
+          onmouseout="this.style.background='white'">
+          <span style="font-size:13px;font-weight:900;font-style:italic;text-transform:uppercase;">${s.name}</span>
+          ${roleBadge}
+        </div>`;
+      }).join('');
+
+      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic">
+        <button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button>
+        <div class="mb-12 border-l-[10px] border-uber-accent pl-8">
+          <h3 class="text-4xl font-black tracking-tighter mb-4 uppercase">職員マスタ</h3>
+          <div class="text-[12px] opacity-40">${state.activeOffice} — ${allStaff.length}名</div>
+        </div>
+
+        <div class="flex items-center gap-2 border border-uber bg-uber-secondary px-4 py-2 mb-4 max-w-xl">
+          <i data-lucide="search" class="w-4 h-4 opacity-40 shrink-0"></i>
+          <input id="master-search" type="text" placeholder="名前で検索..."
+            oninput="filterMasterList()"
+            class="flex-1 bg-transparent outline-none text-[12px] font-black italic text-uber-accent placeholder:opacity-30 placeholder:not-italic">
+        </div>
+
+        <div class="max-w-xl">
+          <div style="display:grid;grid-template-columns:1fr 120px;padding:6px 12px;background:#F8F8F8;border:1px solid #2C2C2C;font-size:9px;font-weight:900;text-transform:uppercase;letter-spacing:0.08em;opacity:0.6;">
+            <span>名前（五十音順）</span><span>職種</span>
+          </div>
+          <div style="border:1px solid #E8E8E8;border-top:none;">
+            ${allStaff.length ? rows : '<div style="padding:32px;text-align:center;opacity:0.4;font-size:13px;">この事業所には職員がいません</div>'}
+          </div>
+          <div id="master-count" style="padding:6px 12px;font-size:9px;opacity:0.4;text-align:right;border:1px solid #E8E8E8;border-top:none;">${allStaff.length} / ${allStaff.length}名 表示中</div>
+        </div>
+      </div>`;
     }
     function renderPatientMaster() {
       const allPatients = state.patientMaster
