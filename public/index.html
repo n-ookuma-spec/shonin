@@ -295,6 +295,51 @@
       updateCourseAssignee(state.staffPicker.targetCourse, staffName);
       closeStaffPicker();
     }
+    function hasWeeklyPattern(patient) {
+      if (!patient || !patient.patterns) return false;
+      return state.daysOfWeek.some(day => {
+        const entries = patient.patterns[day];
+        return Array.isArray(entries) && entries.some(e => e.enabled && e.course);
+      });
+    }
+
+    function getPatientPrimaryCourse(patient) {
+      if (!patient || !patient.patterns) return '';
+      const counts = {};
+      state.daysOfWeek.forEach(day => {
+        const entries = patient.patterns[day] || [];
+        entries.forEach(e => {
+          if (e.enabled && e.course) counts[e.course] = (counts[e.course] || 0) + 1;
+        });
+      });
+      const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+      return sorted.length ? sorted[0][0] : '';
+    }
+
+    function filterMasterList() {
+      const searchEl = document.getElementById('master-search');
+      const filterEl = document.getElementById('master-filter');
+      const q = (searchEl ? searchEl.value : '').toLowerCase();
+      const filterVal = filterEl ? filterEl.value : 'all';
+      const rows = document.querySelectorAll('.master-row');
+      let visibleCount = 0;
+      rows.forEach(row => {
+        const name = (row.dataset.name || '').toLowerCase();
+        const room = (row.dataset.room || '').toLowerCase();
+        const pattern = row.dataset.pattern || '';
+        const matchesSearch = !q || name.includes(q) || room.includes(q);
+        const matchesFilter =
+          filterVal === 'all' ||
+          (filterVal === 'unset' && pattern === 'unset') ||
+          (filterVal === 'set'   && pattern === 'set');
+        const visible = matchesSearch && matchesFilter;
+        row.style.display = visible ? '' : 'none';
+        if (visible) visibleCount++;
+      });
+      const counter = document.getElementById('master-count');
+      if (counter) counter.textContent = visibleCount + ' / ' + rows.length + '名 表示中';
+    }
+
     function renderStaffPicker() {
       if (!state.staffPicker.isOpen) return '';
       const course = state.staffPicker.targetCourse;
