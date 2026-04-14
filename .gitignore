@@ -11,3 +11,4 @@ scripts/.env
 scripts/serviceAccountKey.json
 scripts/*.json
 !scripts/requirements.txt
+.superpowers/
