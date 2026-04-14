@@ -117,23 +117,137 @@
       userInfo: { email: '', name: '読み込み中...' },
       selectedMaster: null,
       viewingStaffSchedule: null,
+      viewingPatientPatterns: null,
       staffPicker: { isOpen: false, targetCourse: null, searchQuery: '' },
       patientModal: { isOpen: false, formData: { patterns: {} } },
       calendarDrag: null
     };
 
-    function openPatientModal(patient) {
+    function createEmptyPatternEntry(course = '') {
+      return { id: Date.now() + Math.random(), enabled: true, startTime: '09:00', endTime: '10:00', content: '', course: course };
+    }
+    function getDefaultPatterns() {
       const defaultPatterns = {};
-      state.daysOfWeek.forEach(d => defaultPatterns[d] = { startTime: '09:00', endTime: '10:00', content: '', enabled: false });
+      state.daysOfWeek.forEach(d => { defaultPatterns[d] = [createEmptyPatternEntry()]; });
+      return defaultPatterns;
+    }
+    function normalizePatternEntry(entry) {
+      return {
+        id: entry?.id || Date.now() + Math.random(),
+        enabled: entry?.enabled !== false,
+        startTime: entry?.startTime || '09:00',
+        endTime: entry?.endTime || '10:00',
+        content: entry?.content || '',
+        course: entry?.course || ''
+      };
+    }
+    function normalizePatternDay(patternDay) {
+      if (Array.isArray(patternDay)) {
+        return patternDay.map(normalizePatternEntry);
+      }
+      if (patternDay && typeof patternDay === 'object' && (patternDay.startTime || patternDay.endTime || patternDay.content || patternDay.enabled !== undefined)) {
+        return [normalizePatternEntry(patternDay)];
+      }
+      return [];
+    }
+    function normalizePatientPatterns(patterns) {
+      const normalized = getDefaultPatterns();
+      state.daysOfWeek.forEach(day => {
+        const entries = normalizePatternDay(patterns?.[day]);
+        normalized[day] = entries.length ? entries : [createEmptyPatternEntry()];
+      });
+      return normalized;
+    }
+    function getAllCourseOptions() {
+      return [...new Set(Object.values(state.courseNames).flat())];
+    }
+    function openPatientPatternSidebar(patientName) {
+      if (state.viewingPatientPatterns === patientName) { state.viewingPatientPatterns = null; }
+      else { state.viewingPatientPatterns = patientName; state.viewingStaffSchedule = null; }
+      renderApp();
+    }
+    function closePatientPatternSidebar() { state.viewingPatientPatterns = null; renderApp(); }
+    function addPatternEntry(day) {
+      state.patientModal.formData.patterns[day].push(createEmptyPatternEntry(state.activeCourse || ''));
+      renderApp();
+    }
+    function removePatternEntry(day, entryId) {
+      const entries = state.patientModal.formData.patterns[day];
+      state.patientModal.formData.patterns[day] = entries.filter(entry => entry.id !== entryId);
+      if (state.patientModal.formData.patterns[day].length === 0) {
+        state.patientModal.formData.patterns[day].push(createEmptyPatternEntry());
+      }
+      renderApp();
+    }
+    function updatePatternEntry(day, entryId, field, value) {
+      const entry = state.patientModal.formData.patterns[day].find(item => item.id === entryId);
+      if (!entry) return;
+      entry[field] = value;
+      renderApp();
+    }
+    function getPatternExpansionRows() {
+      const rows = [];
+      state.patientMaster
+        .filter(patient => patient.office === state.activeOffice)
+        .forEach(patient => {
+          const patterns = normalizePatientPatterns(patient.patterns);
+          state.daysOfWeek.forEach(day => {
+            patterns[day]
+              .filter(entry => entry.enabled && entry.course && timeToMinutes(entry.endTime) > timeToMinutes(entry.startTime))
+              .forEach(entry => {
+                rows.push({
+                  id: Date.now() + Math.random(),
+                  office: state.activeOffice,
+                  day: day,
+                  course: entry.course,
+                  startTime: entry.startTime,
+                  endTime: entry.endTime,
+                  room: patient.room || '',
+                  patient: patient.name || '',
+                  content: entry.content || '',
+                  isMultiple: false,
+                  secondaryStaff: ''
+                });
+              });
+          });
+        });
+      return rows;
+    }
+    function expandPatientPatternsToSchedules() {
+      const rows = getPatternExpansionRows();
+      if (rows.length === 0) { showToast('展開できる週間パターンがありません'); return; }
+      let added = 0;
+      rows.forEach(row => {
+        const exists = state.scheduleRows.some(existing =>
+          existing.office === row.office &&
+          existing.day === row.day &&
+          existing.course === row.course &&
+          existing.patient === row.patient &&
+          existing.startTime === row.startTime &&
+          existing.endTime === row.endTime &&
+          (existing.content || '') === (row.content || '')
+        );
+        if (!exists) {
+          state.scheduleRows.push(row);
+          added += 1;
+        }
+      });
+      renderApp();
+      showToast(added ? `${added}件の予定を展開しました` : '追加対象の予定はありません');
+      window.__triggerAutoSave && window.__triggerAutoSave();
+    }
+
+    function openPatientModal(patient) {
       state.patientModal = { 
         isOpen: true, 
         formData: { 
-          id: patient.id || Date.now(),
+          _docId: patient._docId || '',
+          id: patient.id || patient.user_id || Date.now(),
           name: patient.name || '', 
           room: patient.room || '', 
           floor: patient.floor || '1',
           office: patient.office || state.activeOffice,
-          patterns: patient.patterns || defaultPatterns
+          patterns: normalizePatientPatterns(patient.patterns)
         } 
       };
       renderApp();
@@ -141,28 +255,35 @@
     function closePatientModal() { state.patientModal.isOpen = false; renderApp(); }
     async function savePatientMaster() {
       const d = state.patientModal.formData;
-      const idx = state.patientMaster.findIndex(p => p.office === d.office && (p.id === d.id || p.room === d.room));
-      if (idx !== -1) state.patientMaster[idx] = { ...d };
-      else state.patientMaster.push({ ...d });
+      const payload = { ...d, patterns: normalizePatientPatterns(d.patterns) };
+      const idx = state.patientMaster.findIndex(p =>
+        p._docId === payload._docId ||
+        (p.office === payload.office && (p.id === payload.id || (payload.room && p.room === payload.room)))
+      );
+      if (idx !== -1) state.patientMaster[idx] = { ...state.patientMaster[idx], ...payload };
+      else state.patientMaster.push({ ...payload });
       
       closePatientModal();
       showToast('利用者情報を保存しました');
       // Firestoreへ保存 (patientsコレクション)
-      if (window.__firebaseSavePatient) window.__firebaseSavePatient(d);
+      if (window.__firebaseSavePatient) window.__firebaseSavePatient(payload);
     }
 
     function applyPatientPattern(patientName) {
       const patient = state.patientMaster.find(p => p.name === patientName && p.office === state.activeOffice);
       if (!patient || !patient.patterns) return;
-      const pattern = patient.patterns[state.activeDay];
-      if (pattern && pattern.enabled) {
-        document.getElementById('modal-startTime').value = pattern.startTime;
-        document.getElementById('modal-endTime').value = pattern.endTime;
-        document.getElementById('modal-content').value = pattern.content;
-        showToast('パターンを適用しました');
-      } else {
+      const dayPatterns = normalizePatientPatterns(patient.patterns)[state.activeDay] || [];
+      const pattern = dayPatterns.find(entry => entry.enabled && entry.course === state.activeCourse)
+        || dayPatterns.find(entry => entry.enabled);
+      if (!pattern) {
         showToast(state.activeDay + '曜日のパターンは設定されていません');
+        return;
       }
+      document.getElementById('modal-startTime').value = pattern.startTime;
+      document.getElementById('modal-endTime').value = pattern.endTime;
+      document.getElementById('modal-content').value = pattern.content;
+      state.modalState.formData.course = pattern.course || state.modalState.formData.course;
+      showToast(dayPatterns.filter(entry => entry.enabled).length > 1 ? '最初のパターンを適用しました' : 'パターンを適用しました');
     }
 
     function openStaffPicker(course) {
@@ -739,12 +860,13 @@
     }
     function renderPatientMaster() {
       const currentPatients = state.patientMaster.filter(p => p.office === state.activeOffice).sort((a,b) => (a.name||'').localeCompare(b.name||'', 'ja'));
-      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><h3 class="text-4xl mb-4 tracking-tighter uppercase italic font-black">利用者マスタ</h3><div class="text-[12px] opacity-40 mb-12">${state.activeOffice} — ${currentPatients.length}名</div><div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-0 border-t border-l border-uber">${currentPatients.map(p => `<button onclick="openPatientModal(${JSON.stringify(p).replace(/"/g, '&quot;')})" class="p-5 border-r border-b border-uber flex items-center hover:bg-uber-accent hover:text-white transition-all text-uber-accent w-full text-left group"><span class="text-[13px] italic uppercase font-black flex-1">${p.name || '<span class="opacity-40 not-italic">名前なし</span>'}</span><i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></button>`).join('')}${currentPatients.length === 0 ? '<div class="p-8 border-r border-b border-uber opacity-40 col-span-4 text-center">この事業所には利用者がいません</div>' : ''}</div></div>`;
+      return `<div class="p-16 flex-1 overflow-auto bg-white text-uber-accent font-black uppercase italic"><button onclick="openMasterDetail(null)" class="mb-12 flex items-center gap-3 border border-uber px-6 py-3 w-fit hover:bg-uber-secondary transition-all"><i data-lucide="arrow-left" class="w-4 h-4"></i> 戻る</button><div class="flex flex-wrap items-end justify-between gap-6 mb-12"><div><h3 class="text-4xl mb-4 tracking-tighter uppercase italic font-black">利用者マスタ</h3><div class="text-[12px] opacity-40">${state.activeOffice} — ${currentPatients.length}名</div></div><button onclick="expandPatientPatternsToSchedules()" class="flex items-center gap-2 px-6 py-3 border border-uber bg-white hover:bg-uber-accent hover:text-white transition-all text-[11px] font-black uppercase"><i data-lucide="rows-3" class="w-4 h-4"></i>週間パターンを予定へ展開</button></div><div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-0 border-t border-l border-uber">${currentPatients.map(p => `<button onclick="openPatientModal(${JSON.stringify(p).replace(/"/g, '&quot;')})" class="p-5 border-r border-b border-uber flex items-center hover:bg-uber-accent hover:text-white transition-all text-uber-accent w-full text-left group"><span class="text-[13px] italic uppercase font-black flex-1">${p.name || '<span class="opacity-40 not-italic">名前なし</span>'}</span><i data-lucide="chevron-right" class="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity"></i></button>`).join('')}${currentPatients.length === 0 ? '<div class="p-8 border-r border-b border-uber opacity-40 col-span-4 text-center">この事業所には利用者がいません</div>' : ''}</div></div>`;
     }
 
     function renderPatientModal() {
       if (!state.patientModal.isOpen) return '';
       const d = state.patientModal.formData;
+      const courseOptions = getAllCourseOptions();
       return `<div class="fixed inset-0 bg-black/60 z-[3000] flex items-center justify-center p-6 text-uber-accent font-black uppercase italic" onclick="closePatientModal()">
         <div class="bg-white border-[3px] border-uber w-full max-w-[900px] shadow-2xl overflow-hidden" onclick="event.stopPropagation()">
           <div class="bg-uber-accent p-6 text-white flex justify-between items-center">
@@ -759,18 +881,32 @@
             </div>
             
             <div class="flex flex-col gap-4">
-              <div class="text-[11px] font-black tracking-widest border-l-4 border-uber-accent pl-4 mb-2 uppercase italic">週間パターン設定 (デフォルト)</div>
-              <div class="grid grid-cols-7 gap-2">
+              <div class="text-[11px] font-black tracking-widest border-l-4 border-uber-accent pl-4 mb-2 uppercase italic">週間パターン設定</div>
+              <div class="grid grid-cols-1 xl:grid-cols-7 gap-3">
                 ${state.daysOfWeek.map(day => {
-                  const p = d.patterns[day] || { startTime: '09:00', endTime: '10:00', content: '', enabled: false };
-                  return `<div class="border border-uber p-4 flex flex-col gap-3 ${p.enabled ? 'bg-uber-secondary' : 'opacity-40'}">
-                    <div class="flex items-center justify-between">
+                  const entries = d.patterns[day] || [createEmptyPatternEntry()];
+                  return `<div class="border border-uber p-4 flex flex-col gap-3 bg-white min-h-[260px]">
+                    <div class="flex items-center justify-between border-b border-uber/10 pb-2">
                       <span class="text-[11px] font-black">${day}</span>
-                      <input type="checkbox" ${p.enabled?'checked':''} onchange="state.patientModal.formData.patterns['${day}'].enabled=this.checked; renderApp();" class="accent-uber-accent">
+                      <button onclick="addPatternEntry('${day}')" class="flex items-center gap-1 text-[9px] font-black px-2 py-1 border border-uber hover:bg-uber-accent hover:text-white transition-all"><i data-lucide="plus" class="w-3 h-3"></i>追加</button>
                     </div>
-                    <input type="time" value="${p.startTime}" onchange="state.patientModal.formData.patterns['${day}'].startTime=this.value" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
-                    <input type="time" value="${p.endTime}" onchange="state.patientModal.formData.patterns['${day}'].endTime=this.value" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
-                    <input type="text" placeholder="内容" value="${p.content}" oninput="state.patientModal.formData.patterns['${day}'].content=this.value" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none italic text-uber-accent">
+                    <div class="flex flex-col gap-3">
+                      ${entries.map(entry => `<div class="border border-uber/20 p-3 flex flex-col gap-2 ${entry.enabled ? 'bg-uber-secondary/60' : 'opacity-50'}">
+                        <div class="flex items-center justify-between gap-2">
+                          <label class="flex items-center gap-2 text-[9px] font-black"><input type="checkbox" ${entry.enabled ? 'checked' : ''} onchange="updatePatternEntry('${day}', ${entry.id}, 'enabled', this.checked)" class="accent-uber-accent">有効</label>
+                          <button onclick="removePatternEntry('${day}', ${entry.id})" class="p-1 text-red-600/60 hover:text-red-600 transition-colors"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button>
+                        </div>
+                        <select onchange="updatePatternEntry('${day}', ${entry.id}, 'course', this.value)" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
+                          <option value="">コース選択</option>
+                          ${courseOptions.map(course => `<option value="${course}" ${entry.course === course ? 'selected' : ''}>${course}</option>`).join('')}
+                        </select>
+                        <div class="grid grid-cols-2 gap-2">
+                          <input type="time" value="${entry.startTime}" onchange="updatePatternEntry('${day}', ${entry.id}, 'startTime', this.value)" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
+                          <input type="time" value="${entry.endTime}" onchange="updatePatternEntry('${day}', ${entry.id}, 'endTime', this.value)" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none text-uber-accent">
+                        </div>
+                        <input type="text" placeholder="内容" value="${entry.content}" oninput="updatePatternEntry('${day}', ${entry.id}, 'content', this.value)" class="text-[10px] font-black bg-transparent border-b border-uber/20 outline-none italic text-uber-accent">
+                      </div>`).join('')}
+                    </div>
                   </div>`;
                 }).join('')}
               </div>
@@ -959,8 +1095,9 @@
     // 利用者マスタの保存 (Firestore)
     async function firebaseSavePatient(patientData) {
       try {
-        const id = patientData.id || Date.now();
-        await setDoc(doc(db, 'patients', String(id)), patientData);
+        const id = patientData._docId || patientData.id || Date.now();
+        const { _docId, ...payload } = patientData;
+        await setDoc(doc(db, 'patients', String(id)), payload, { merge: true });
         console.log('Patient master saved to Firestore');
       } catch (e) {
         console.error('Error saving patient master:', e);
@@ -1021,6 +1158,7 @@
         // patients: { office, room, floor, name }
         state.patientMaster = patientsSnap.docs.map(d => ({
           ...d.data(),
+          _docId: d.id,
           room: String(d.data().room || '')
         }));
 

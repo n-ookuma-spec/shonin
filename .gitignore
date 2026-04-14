@@ -5,3 +5,9 @@
 .DS_Store
 *.gsheet
 desktop.ini
+
+# 同期スクリプト - 機密ファイル
+scripts/.env
+scripts/serviceAccountKey.json
+scripts/*.json
+!scripts/requirements.txt
