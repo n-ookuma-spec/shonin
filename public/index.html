@@ -105,7 +105,7 @@
       isLoaded: false,
       lastUpdate: null,
       modalState: { isOpen: false, mode: 'create', formData: {} },
-      duplicateModal: { isOpen: false, targetId: null, selectedDays: [] },
+      duplicateModal: { isOpen: false, targetId: null, selectedDays: [], startTime: '09:00', endTime: '10:00' },
       confirmModal: { isOpen: false, message: '', onConfirm: null },
       officeMaster: [], officeDetails: {}, selectedOfficeDetail: null, staffMaster: [], patientMaster: [], courseAssignees: {},
       courseNames: { 'day_ns': ['看1'], 'day_cw': ['介1'], 'night': ['夜看1'] },
@@ -413,18 +413,42 @@
       return `<div class="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-6" onclick="closeConfirm()"><div class="bg-white border-[3px] border-uber w-full max-w-[400px] shadow-2xl" onclick="event.stopPropagation()"><div class="bg-uber-accent p-4 text-white text-[10px] font-black uppercase italic flex items-center gap-3"><i data-lucide="alert-triangle" class="w-4 h-4"></i>確認</div><div class="p-8"><p class="text-[14px] font-black text-uber-accent uppercase italic mb-8 whitespace-pre-line">${state.confirmModal.message}</p><div class="flex gap-0 border-t border-uber -mx-8 -mb-8 mt-8"><button onclick="closeConfirm()" class="flex-1 px-6 py-5 bg-white text-[11px] font-black text-uber-accent border-r border-uber hover:bg-uber-secondary">キャンセル</button><button onclick="state.confirmModal.onConfirm(); closeConfirm();" class="flex-1 px-6 py-5 bg-uber-accent text-white text-[11px] font-black hover:bg-uber-hover">確定</button></div></div></div></div>`;
     }
 
-    function openDuplicateModal(id) { state.duplicateModal = { isOpen: true, targetId: id, selectedDays: [state.activeDay] }; renderApp(); }
+    function openDuplicateModal(id) {
+      const sch = state.scheduleRows.find(r => r.id === id);
+      state.duplicateModal = {
+        isOpen: true,
+        targetId: id,
+        selectedDays: [state.activeDay],
+        startTime: sch?.startTime || '09:00',
+        endTime: sch?.endTime || '10:00'
+      };
+      renderApp();
+    }
     function executeDuplicate() {
       const sch = state.scheduleRows.find(r => r.id === state.duplicateModal.targetId);
       if (!sch) return;
+      const startTime = state.duplicateModal.startTime || sch.startTime;
+      const endTime = state.duplicateModal.endTime || sch.endTime;
+      if (timeToMinutes(endTime) <= timeToMinutes(startTime)) {
+        showToast('終了時刻は開始時刻より後にしてください');
+        return;
+      }
       state.duplicateModal.selectedDays.forEach(day => {
-        if (day !== state.activeDay) { state.scheduleRows.push({ ...sch, id: Date.now() + Math.random(), day: day }); }
+        if (day !== state.activeDay) {
+          state.scheduleRows.push({
+            ...sch,
+            id: Date.now() + Math.random(),
+            day: day,
+            startTime: startTime,
+            endTime: endTime
+          });
+        }
       });
       state.duplicateModal.isOpen = false; showToast('複製しました'); renderApp(); window.__triggerAutoSave && window.__triggerAutoSave();
     }
     function renderDuplicateModal() {
       if (!state.duplicateModal.isOpen) return '';
-      return `<div class="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-6" onclick="state.duplicateModal.isOpen=false; renderApp();"><div class="bg-white border-[3px] border-uber w-full max-w-[450px] shadow-2xl" onclick="event.stopPropagation()"><div class="bg-uber-accent p-4 text-white text-[10px] font-black uppercase italic flex items-center gap-3"><i data-lucide="copy" class="w-4 h-4"></i>一括複製</div><div class="p-8"><p class="text-[12px] font-black text-uber-accent uppercase mb-6 italic opacity-60">複製先の曜日を選択してください</p><div class="grid grid-cols-4 gap-2 mb-8">${state.daysOfWeek.map(d => `<button onclick="const idx=state.duplicateModal.selectedDays.indexOf('${d}'); if(idx===-1)state.duplicateModal.selectedDays.push('${d}');else state.duplicateModal.selectedDays.splice(idx,1); renderApp();" class="py-3 border-2 font-black text-[12px] transition-all ${state.duplicateModal.selectedDays.includes(d) ? 'bg-uber-accent text-white border-uber-accent' : 'bg-white text-uber-accent border-uber-border hover:border-uber'}">${d}</button>`).join('')}</div><div class="flex gap-0 border-t border-uber -mx-8 -mb-8 mt-8"><button onclick="state.duplicateModal.isOpen=false; renderApp();" class="flex-1 px-6 py-5 bg-white text-[11px] font-black text-uber-accent border-r border-uber hover:bg-uber-secondary">キャンセル</button><button onclick="executeDuplicate()" class="flex-1 px-6 py-5 bg-uber-accent text-white text-[11px] font-black hover:bg-uber-hover">複製を実行</button></div></div></div></div>`;
+      return `<div class="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-6" onclick="state.duplicateModal.isOpen=false; renderApp();"><div class="bg-white border-[3px] border-uber w-full max-w-[450px] shadow-2xl" onclick="event.stopPropagation()"><div class="bg-uber-accent p-4 text-white text-[10px] font-black uppercase italic flex items-center gap-3"><i data-lucide="copy" class="w-4 h-4"></i>一括複製</div><div class="p-8"><p class="text-[12px] font-black text-uber-accent uppercase mb-6 italic opacity-60">複製先の曜日を選択してください</p><div class="grid grid-cols-4 gap-2 mb-8">${state.daysOfWeek.map(d => `<button onclick="const idx=state.duplicateModal.selectedDays.indexOf('${d}'); if(idx===-1)state.duplicateModal.selectedDays.push('${d}');else state.duplicateModal.selectedDays.splice(idx,1); renderApp();" class="py-3 border-2 font-black text-[12px] transition-all ${state.duplicateModal.selectedDays.includes(d) ? 'bg-uber-accent text-white border-uber-accent' : 'bg-white text-uber-accent border-uber-border hover:border-uber'}">${d}</button>`).join('')}</div><p class="text-[12px] font-black text-uber-accent uppercase mb-3 italic opacity-60">複製先の時間を設定</p><div class="mb-8 border border-uber flex items-center overflow-hidden"><input type="time" step="1800" value="${state.duplicateModal.startTime}" onchange="state.duplicateModal.startTime=this.value" class="flex-1 p-3 text-[12px] font-black outline-none hover:bg-uber-secondary"><div class="w-px self-stretch bg-uber"></div><input type="time" step="1800" value="${state.duplicateModal.endTime}" onchange="state.duplicateModal.endTime=this.value" class="flex-1 p-3 text-[12px] font-black outline-none hover:bg-uber-secondary"></div><div class="flex gap-0 border-t border-uber -mx-8 -mb-8 mt-8"><button onclick="state.duplicateModal.isOpen=false; renderApp();" class="flex-1 px-6 py-5 bg-white text-[11px] font-black text-uber-accent border-r border-uber hover:bg-uber-secondary">キャンセル</button><button onclick="executeDuplicate()" class="flex-1 px-6 py-5 bg-uber-accent text-white text-[11px] font-black hover:bg-uber-hover">複製を実行</button></div></div></div></div>`;
     }
 
     function openCreateModal(day, course, startTime) { const endMin = timeToMinutes(startTime) + 60; state.modalState = { isOpen: true, mode: 'create', formData: { day, course, startTime, endTime: formatTime(Math.floor(endMin/60), endMin%60), room: '', patient: '', content: '', secondaryStaff: '' } }; renderApp(); }
